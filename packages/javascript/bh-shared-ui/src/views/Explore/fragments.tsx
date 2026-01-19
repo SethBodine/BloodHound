@@ -15,23 +15,29 @@
 // SPDX-License-Identifier: Apache-2.0
 
 import { Alert, Box, CircularProgress, Typography } from '@mui/material';
-import useCollapsibleSectionStyles from './InfoStyles/CollapsibleSection';
 import React, { PropsWithChildren } from 'react';
+import { ActiveDirectoryKindProperties, AzureKindProperties, CommonKindProperties } from '../../graphSchema';
 import { EntityField, format } from '../../utils';
+import { adaptClickHandlerToKeyDown } from '../../utils/adaptClickHandlerToKeyDown';
+import useCollapsibleSectionStyles from './InfoStyles/CollapsibleSection';
 
-const exclusionList = [
+export const exclusionList = [
     'gid',
     'admin_rights_count',
     'admin_rights_risk_percent',
-    'hasspn',
-    'system_tags',
-    'user_tags',
+    ActiveDirectoryKindProperties.HasSPN,
+    CommonKindProperties.SystemTags,
+    'isTierZero',
+    CommonKindProperties.UserTags,
     'neo4jImportId',
-    'name',
-    'objectid',
-    'displayname',
-    'service_principal_id',
+    CommonKindProperties.Name,
+    CommonKindProperties.ObjectID,
+    CommonKindProperties.DisplayName,
+    AzureKindProperties.ServicePrincipalID,
     'highvalue',
+    'reconcile',
+    ActiveDirectoryKindProperties.InheritanceHashes,
+    ActiveDirectoryKindProperties.InheritanceHash,
 ];
 
 const filterNegatedFields = (fields: EntityField[]): EntityField[] =>
@@ -47,10 +53,14 @@ export const Section: React.FC<PropsWithChildren<{ label?: string | null; classN
             {label && (
                 <Typography variant='h6'>
                     <span
+                        role='button'
+                        aria-label={label}
+                        tabIndex={0}
                         className={'link'}
                         onClick={(e) => {
                             e.preventDefault();
-                        }}>
+                        }}
+                        onKeyDown={adaptClickHandlerToKeyDown((e) => e.preventDefault())}>
                         {label}
                     </span>
                 </Typography>
@@ -93,19 +103,23 @@ export const SubHeader: React.FC<{ label: string; count?: number; isLoading?: bo
 
 export const FieldsContainer: React.FC<PropsWithChildren> = ({ children }) => {
     const styles = useCollapsibleSectionStyles();
-    return <div className={styles.fieldsContainer}>{children}</div>;
+    return <Box className={styles.fieldsContainer}>{children}</Box>;
 };
 
 export const Field: React.FC<EntityField> = (entityField) => {
     const { label, value, keyprop } = entityField;
 
-    if (
-        value === undefined ||
-        value === '' ||
-        (Array.isArray(value) && value.length === 0) ||
-        (typeof value === 'object' && Object.keys(value).length === 0)
-    )
+    try {
+        if (
+            value === undefined ||
+            value === '' ||
+            (Array.isArray(value) && value.length === 0) ||
+            (typeof value === 'object' && Object.keys(value).length === 0)
+        )
+            return null;
+    } catch (e) {
         return null;
+    }
 
     const formattedValue = format(entityField);
 

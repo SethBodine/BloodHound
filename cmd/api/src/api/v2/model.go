@@ -18,15 +18,19 @@ package v2
 
 import (
 	"github.com/gorilla/schema"
-	"github.com/specterops/bloodhound/cache"
-	_ "github.com/specterops/bloodhound/dawgs/drivers/neo4j"
-	"github.com/specterops/bloodhound/dawgs/graph"
-	"github.com/specterops/bloodhound/src/config"
-	"github.com/specterops/bloodhound/src/daemons/datapipe"
-	"github.com/specterops/bloodhound/src/database"
-	"github.com/specterops/bloodhound/src/model"
-	"github.com/specterops/bloodhound/src/queries"
-	"github.com/specterops/bloodhound/src/serde"
+	"github.com/specterops/bloodhound/cmd/api/src/api"
+	"github.com/specterops/bloodhound/cmd/api/src/auth"
+	"github.com/specterops/bloodhound/cmd/api/src/config"
+	"github.com/specterops/bloodhound/cmd/api/src/database"
+	"github.com/specterops/bloodhound/cmd/api/src/database/types/null"
+	"github.com/specterops/bloodhound/cmd/api/src/model"
+	"github.com/specterops/bloodhound/cmd/api/src/queries"
+	"github.com/specterops/bloodhound/cmd/api/src/serde"
+	"github.com/specterops/bloodhound/cmd/api/src/services/dogtags"
+	"github.com/specterops/bloodhound/cmd/api/src/services/fs"
+	"github.com/specterops/bloodhound/cmd/api/src/services/upload"
+	"github.com/specterops/bloodhound/packages/go/cache"
+	"github.com/specterops/dawgs/graph"
 )
 
 type ListPermissionsResponse struct {
@@ -59,13 +63,17 @@ type ListSAMLProvidersResponse struct {
 }
 
 type UpdateUserRequest struct {
-	FirstName      string  `json:"first_name"`
-	LastName       string  `json:"last_name"`
-	EmailAddress   string  `json:"email_address"`
-	Principal      string  `json:"principal"`
-	Roles          []int32 `json:"roles"`
-	SAMLProviderID string  `json:"saml_provider_id"`
-	IsDisabled     bool    `json:"is_disabled"`
+	FirstName      string     `json:"first_name"`
+	LastName       string     `json:"last_name"`
+	EmailAddress   string     `json:"email_address"`
+	Principal      string     `json:"principal"`
+	Roles          []int32    `json:"roles"`
+	SAMLProviderID string     `json:"saml_provider_id"`
+	SSOProviderID  null.Int32 `json:"sso_provider_id"`
+	IsDisabled     *bool      `json:"is_disabled,omitempty"`
+
+	AllEnvironments                  null.Bool              `json:"all_environments"`
+	EnvironmentTargetedAccessControl *UpdateUserETACRequest `json:"environment_targeted_access_control,omitempty"`
 }
 
 type CreateUserRequest struct {
@@ -78,6 +86,7 @@ type DeleteSAMLProviderResponse struct {
 }
 
 type SetUserSecretRequest struct {
+	CurrentSecret      string `json:"current_secret"`
 	Secret             string `json:"secret" validate:"password,length=12,lower=1,upper=1,special=1,numeric=1"`
 	NeedsPasswordReset bool   `json:"needs_password_reset"`
 }
@@ -87,47 +96,10 @@ type CreateUserToken struct {
 	UserID    string `json:"user_id"`
 }
 
-type CreateSAMLAuthProviderRequest struct {
-	Name                       string   `json:"name"`
-	DisplayName                string   `json:"display_name"`
-	SigningCertificate         string   `json:"signing_certificate"`
-	IssuerURI                  string   `json:"issuer_uri"`
-	SingleSignOnURI            string   `json:"single_signon_uri"`
-	PrincipalAttributeMappings []string `json:"principal_attribute_mappings"`
-}
-
-type UpdateSAMLAuthProviderRequest struct {
-	Name                       string   `json:"name"`
-	DisplayName                string   `json:"display_name"`
-	SigningCertificate         string   `json:"signing_certificate"`
-	IssuerURI                  string   `json:"issuer_uri"`
-	SingleSignOnURI            string   `json:"single_signon_uri"`
-	PrincipalAttributeMappings []string `json:"principal_attribute_mappings"`
-}
-
-type SecretInitializationRequest struct {
-	AdminEmailAddress string `json:"admin_email_address"`
-	Secret            string `json:"secret"`
-}
-
-type IDPValidationResponse struct {
-	ErrorMessage string `json:"error_message"`
-	Successful   bool   `json:"successful"`
-}
-
-type PagedNodeListEntry struct {
-	Name              string `json:"name"`
-	Type              string `json:"type"`
-	DistinguishedName string `json:"distinguished_name"`
-	ObjectID          string `json:"object_id"`
-}
-
-type SAMLInitializationRequest struct {
-	AdminEmailAddress            string `json:"admin_email_address"`
-	IdentityProviderProviderName string `json:"idp_name"`
-	IdentityProviderURL          string `json:"idp_url"`
-	ServiceProviderCertificate   string `json:"sp_certificate"`
-	ServiceProviderKey           string `json:"sp_private_key"`
+type CreateOIDCProviderRequest struct {
+	Name     string `json:"name"`
+	Issuer   string `json:"issuer"`
+	ClientId string `json:"client_id"`
 }
 
 // Resources holds the database and configuration dependencies to be passed around the API functions
@@ -140,7 +112,12 @@ type Resources struct {
 	QueryParameterFilterParser model.QueryParameterFilterParser
 	Cache                      cache.Cache
 	CollectorManifests         config.CollectorManifests
-	TaskNotifier               datapipe.Tasker
+	Authorizer                 auth.Authorizer
+	Authenticator              api.Authenticator
+	IngestSchema               upload.IngestSchema
+	FileService                fs.Service
+	openGraphSchemaService     OpenGraphSchemaService
+	DogTags                    dogtags.Service
 }
 
 func NewResources(
@@ -150,7 +127,11 @@ func NewResources(
 	apiCache cache.Cache,
 	graphQuery queries.Graph,
 	collectorManifests config.CollectorManifests,
-	taskNotifier datapipe.Tasker,
+	authorizer auth.Authorizer,
+	authenticator api.Authenticator,
+	ingestSchema upload.IngestSchema,
+	dogtagsService dogtags.Service,
+	openGraphSchemaService OpenGraphSchemaService,
 ) Resources {
 	return Resources{
 		Decoder:                    schema.NewDecoder(),
@@ -161,6 +142,11 @@ func NewResources(
 		QueryParameterFilterParser: model.NewQueryParameterFilterParser(),
 		Cache:                      apiCache,
 		CollectorManifests:         collectorManifests,
-		TaskNotifier:               taskNotifier,
+		Authorizer:                 authorizer,
+		Authenticator:              authenticator,
+		IngestSchema:               ingestSchema,
+		FileService:                &fs.Client{},
+		DogTags:                    dogtagsService,
+		openGraphSchemaService:     openGraphSchemaService,
 	}
 }

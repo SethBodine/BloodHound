@@ -13,25 +13,31 @@
 // limitations under the License.
 //
 // SPDX-License-Identifier: Apache-2.0
-
+import { BaseGraphLayoutOptions, SNACKBAR_DURATION } from 'bh-shared-ui';
+import { Environment } from 'js-client-library';
+import { OptionsObject, SnackbarKey } from 'notistack';
 import * as types from './types';
 
-export const removeSnackbar = (key: string): types.GlobalViewActionTypes => {
+export const removeSnackbar = (key: SnackbarKey): types.GlobalViewActionTypes => {
     return {
         type: types.GLOBAL_REMOVE_SNACKBAR,
         key: key,
     };
 };
 
-export const addSnackbar = (notification: string, key: string, options: any = {}): types.GlobalViewActionTypes => {
+export const addSnackbar = (
+    notification: string,
+    key: string,
+    options: OptionsObject = {}
+): types.GlobalViewActionTypes => {
     return {
         type: types.GLOBAL_ADD_SNACKBAR,
         notification: {
             message: notification,
             key: key || (new Date().getTime() + Math.random()).toString(),
             options: {
+                autoHideDuration: SNACKBAR_DURATION,
                 ...options,
-                autoHideDuration: 5000,
             },
             dismissed: false,
         },
@@ -45,6 +51,41 @@ export const closeSnackbar = (key: string): types.GlobalViewActionTypes => {
     };
 };
 
+export const setDarkMode = (darkMode: boolean): types.GlobalViewActionTypes => {
+    return {
+        type: types.GLOBAL_SET_DARK_MODE,
+        darkMode,
+    };
+};
+export const setAutoRunQueries = (autoRunQueries: boolean): types.GlobalViewActionTypes => {
+    return {
+        type: types.GLOBAL_SET_AUTO_RUN_QUERIES,
+        autoRunQueries,
+    };
+};
+
+export const setExploreLayout = (exploreLayout: BaseGraphLayoutOptions): types.GlobalViewActionTypes => {
+    return {
+        type: types.GLOBAL_SET_EXPLORE_LAYOUT,
+        exploreLayout,
+    };
+};
+
+export const setIsExploreTableSelected = (isExploreTableSelected: boolean): types.GlobalViewActionTypes => {
+    return {
+        type: types.GLOBAL_SET_IS_EXPLORE_TABLE_SELECTED,
+        isExploreTableSelected,
+    };
+};
+
+export const setSelectedExploreTableColumns = (
+    selectedExploreTableColumns: Record<string, boolean>
+): types.GlobalViewActionTypes => {
+    return {
+        type: types.GLOBAL_SET_SELECTED_EXPLORE_TABLE_COLUMNS,
+        selectedExploreTableColumns,
+    };
+};
 export const setExpanded = (expanded: { [key: string]: symbol[] }): types.GlobalAccordionsActionTypes => {
     return {
         type: types.GLOBAL_SET_EXPANDED,
@@ -52,7 +93,7 @@ export const setExpanded = (expanded: { [key: string]: symbol[] }): types.Global
     };
 };
 
-export const setDomain = (domain: types.Domain | null): types.GlobalOptionsActionTypes => {
+export const setDomain = (domain: Environment | null): types.GlobalOptionsActionTypes => {
     return {
         type: types.GLOBAL_SET_DOMAIN,
         domain,

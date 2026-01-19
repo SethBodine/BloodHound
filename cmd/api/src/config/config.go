@@ -21,22 +21,22 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"log/slog"
 	"os"
 	"path/filepath"
 	"regexp"
+	"strconv"
 	"strings"
-	"time"
 
-	"github.com/specterops/bloodhound/crypto"
-	"github.com/specterops/bloodhound/log"
-	"github.com/specterops/bloodhound/src/serde"
+	"github.com/specterops/bloodhound/cmd/api/src/serde"
+	"github.com/specterops/bloodhound/packages/go/bhlog/attr"
+	"github.com/specterops/bloodhound/packages/go/crypto"
 )
 
 const (
 	CurrentConfigurationVersion = 2
-	DefaultLogFilePath          = "/var/log/bhapi.log"
 
-	bhAPIEnvironmentVariablePrefix       = "bhe"
+	BHAPIEnvironmentVariablePrefix       = "bhe"
 	environmentVariablePathSeparator     = "_"
 	environmentVariableKeyValueSeparator = "="
 )
@@ -125,11 +125,6 @@ type SAMLConfiguration struct {
 	ServiceProviderCertificateCAChain string `json:"sp_ca_chain"`
 }
 
-type SpecterAuthConfiguration struct {
-	InstanceUUID string `json:"instance_uuid"`
-	Token        string `json:"token"`
-}
-
 type DefaultAdminConfiguration struct {
 	PrincipalName string `json:"principal_name"`
 	Password      string `json:"password"`
@@ -140,43 +135,48 @@ type DefaultAdminConfiguration struct {
 }
 
 type Configuration struct {
-	Version                 int                       `json:"version"`
-	BindAddress             string                    `json:"bind_addr"`
-	NetTimeoutSeconds       int                       `json:"net_timeout_seconds"`
-	SlowQueryThreshold      int64                     `json:"slow_query_threshold"`
-	MaxGraphQueryCacheSize  int                       `json:"max_graphdb_cache_size"`
-	MaxAPICacheSize         int                       `json:"max_api_cache_size"`
-	MetricsPort             string                    `json:"metrics_port"`
-	RootURL                 serde.URL                 `json:"root_url"`
-	WorkDir                 string                    `json:"work_dir"`
-	LogLevel                string                    `json:"log_level"`
-	LogPath                 string                    `json:"log_path"`
-	TLS                     TLSConfiguration          `json:"tls"`
-	GraphDriver             string                    `json:"graph_driver"`
-	Database                DatabaseConfiguration     `json:"database"`
-	Neo4J                   DatabaseConfiguration     `json:"neo4j"`
-	Crypto                  CryptoConfiguration       `json:"crypto"`
-	SAML                    SAMLConfiguration         `json:"saml"`
-	SpecterAuth             SpecterAuthConfiguration  `json:"specter_auth"`
-	DefaultAdmin            DefaultAdminConfiguration `json:"default_admin"`
-	CollectorsBasePath      string                    `json:"collectors_base_path"`
-	DatapipeInterval        int                       `json:"datapipe_interval"`
-	EnableStartupWaitPeriod bool                      `json:"enable_startup_wait_period"`
-	EnableAPILogging        bool                      `json:"enable_api_logging"`
-	DisableAnalysis         bool                      `json:"disable_analysis"`
-	DisableCypherQC         bool                      `json:"disable_cypher_qc"`
-	DisableIngest           bool                      `json:"disable_ingest"`
-	DisableMigrations       bool                      `json:"disable_migrations"`
-	TraversalMemoryLimit    uint16                    `json:"traversal_memory_limit"`
-	AuthSessionTTLHours     int                       `json:"auth_session_ttl_hours"`
-}
-
-func (s Configuration) AuthSessionTTL() time.Duration {
-	return time.Hour * time.Duration(s.AuthSessionTTLHours)
+	Version                         int                       `json:"version"`
+	BindAddress                     string                    `json:"bind_addr"`
+	SlowQueryThreshold              int64                     `json:"slow_query_threshold"`
+	MaxGraphQueryCacheSize          int                       `json:"max_graphdb_cache_size"`
+	MaxAPICacheSize                 int                       `json:"max_api_cache_size"`
+	MetricsPort                     string                    `json:"metrics_port"`
+	RootURL                         serde.URL                 `json:"root_url"`
+	WorkDir                         string                    `json:"work_dir"`
+	LogLevel                        string                    `json:"log_level"`
+	LogPath                         string                    `json:"log_path"`
+	TLS                             TLSConfiguration          `json:"tls"`
+	GraphDriver                     string                    `json:"graph_driver"`
+	Database                        DatabaseConfiguration     `json:"database"`
+	Neo4J                           DatabaseConfiguration     `json:"neo4j"`
+	Crypto                          CryptoConfiguration       `json:"crypto"`
+	SAML                            SAMLConfiguration         `json:"saml"`
+	DefaultAdmin                    DefaultAdminConfiguration `json:"default_admin"`
+	CollectorsBucketURL             serde.URL                 `json:"collectors_bucket_url"`
+	CollectorsBasePath              string                    `json:"collectors_base_path"`
+	DatapipeInterval                int                       `json:"datapipe_interval"`
+	EnableStartupWaitPeriod         bool                      `json:"enable_startup_wait_period"`
+	EnableAPILogging                bool                      `json:"enable_api_logging"`
+	EnableCypherMutations           bool                      `json:"enable_cypher_mutations"`
+	DisableAnalysis                 bool                      `json:"disable_analysis"`
+	DisableAPIKeys					bool					  `json:"disable_api_keys"`
+	DisableCypherComplexityLimit    bool                      `json:"disable_cypher_complexity_limit"`
+	DisableIngest                   bool                      `json:"disable_ingest"`
+	DisableMigrations               bool                      `json:"disable_migrations"`
+	DisableTimeoutLimit             bool                      `json:"disable_timeout_limit"`
+	GraphQueryMemoryLimit           uint16                    `json:"graph_query_memory_limit"`
+	EnableTextLogger                bool                      `json:"enable_text_logger"`
+	RecreateDefaultAdmin            bool                      `json:"recreate_default_admin"`
+	EnableUserAnalytics             bool                      `json:"enable_user_analytics"`
+	ForceDownloadEmbeddedCollectors bool                      `json:"force_download_embedded_collectors"`
 }
 
 func (s Configuration) TempDirectory() string {
 	return filepath.Join(s.WorkDir, "tmp")
+}
+
+func (s Configuration) RetainedFilesDirectory() string {
+	return filepath.Join(s.WorkDir, "retained")
 }
 
 func (s Configuration) ClientLogDirectory() string {
@@ -251,13 +251,13 @@ func SetValuesFromEnv(varPrefix string, target any, env []string) error {
 				cfgKeyPath := strings.TrimPrefix(key, formattedPrefix)
 
 				if err := SetValue(target, cfgKeyPath, valueStr); errors.Is(err, ErrInvalidConfigurationPath) {
-					log.Warnf("%s", err)
+					slog.Warn(fmt.Sprintf("%s", err))
 				} else if err != nil {
 					return err
 				}
 			}
 		} else {
-			log.Errorf("Invalid key/value pair: %+v", kvParts)
+			slog.Error(fmt.Sprintf("Invalid key/value pair: %+v", kvParts))
 		}
 	}
 
@@ -268,11 +268,11 @@ func getConfiguration(path string, defaultConfigFunc func() (Configuration, erro
 	if hasCfgFile, err := HasConfigurationFile(path); err != nil {
 		return Configuration{}, err
 	} else if hasCfgFile {
-		log.Infof("Reading configuration found at %s", path)
+		slog.Info(fmt.Sprintf("Reading configuration found at %s", path))
 
 		return ReadConfigurationFile(path)
 	} else {
-		log.Infof("No configuration file found at %s. Returning defaults.", path)
+		slog.Info(fmt.Sprintf("No configuration file found at %s. Returning defaults.", path))
 
 		return defaultConfigFunc()
 	}
@@ -281,10 +281,27 @@ func getConfiguration(path string, defaultConfigFunc func() (Configuration, erro
 func GetConfiguration(path string, defaultConfigFunc func() (Configuration, error)) (Configuration, error) {
 	if cfg, err := getConfiguration(path, defaultConfigFunc); err != nil {
 		return cfg, err
-	} else if err := SetValuesFromEnv(bhAPIEnvironmentVariablePrefix, &cfg, os.Environ()); err != nil {
+	} else if err := SetValuesFromEnv(BHAPIEnvironmentVariablePrefix, &cfg, os.Environ()); err != nil {
 		return cfg, err
 	} else {
 		return cfg, nil
+	}
+}
+
+func GetTextLoggerEnabled() bool {
+	const env = BHAPIEnvironmentVariablePrefix + "_enable_text_logger"
+
+	if enableTextLogger := os.Getenv(env); enableTextLogger == "" {
+		return false
+	} else if enabled, err := strconv.ParseBool(enableTextLogger); err != nil {
+		slog.Warn(
+			"Failed to parse text logger environment variable",
+			slog.String("env_key", env),
+			attr.Error(err),
+		)
+		return false
+	} else {
+		return enabled
 	}
 }
 
@@ -297,13 +314,13 @@ func (s Configuration) SaveCollectorManifests() (CollectorManifests, error) {
 	manifests := CollectorManifests{}
 
 	if azureHoundManifest, err := generateCollectorManifest(filepath.Join(s.CollectorsDirectory(), azureHoundCollector)); err != nil {
-		log.Errorf("error generating AzureHound manifest file: %s", err)
+		slog.Error(fmt.Sprintf("Error generating AzureHound manifest file: %s", err))
 	} else {
 		manifests[azureHoundCollector] = azureHoundManifest
 	}
 
 	if sharpHoundManifest, err := generateCollectorManifest(filepath.Join(s.CollectorsDirectory(), sharpHoundCollector)); err != nil {
-		log.Errorf("error generating SharpHound manifest file: %s", err)
+		slog.Error(fmt.Sprintf("Error generating SharpHound manifest file: %s", err))
 	} else {
 		manifests[sharpHoundCollector] = sharpHoundManifest
 	}
@@ -348,4 +365,8 @@ func generateCollectorManifest(collectorDir string) (CollectorManifest, error) {
 		Latest:   latestVersion,
 		Versions: collectorVersions,
 	}, nil
+}
+
+func (s Configuration) GetRootURLHost() string {
+	return fmt.Sprintf("%s://%s", s.RootURL.Scheme, s.RootURL.Hostname())
 }

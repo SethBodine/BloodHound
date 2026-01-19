@@ -14,18 +14,22 @@
 //
 // SPDX-License-Identifier: Apache-2.0
 
+// package integration is a set of old integration testing tools
+//
+// Deprecated: integration package is deprecated, see most recent guidance on proper testing
 package integration
 
 import (
 	"context"
-	"github.com/specterops/bloodhound/dawgs"
-	"github.com/specterops/bloodhound/dawgs/drivers/neo4j"
-	"github.com/specterops/bloodhound/dawgs/drivers/pg"
-	"github.com/specterops/bloodhound/dawgs/graph"
-	schema "github.com/specterops/bloodhound/graphschema"
-	"github.com/specterops/bloodhound/src/config"
-	"github.com/specterops/bloodhound/src/test"
-	"github.com/specterops/bloodhound/src/test/integration/utils"
+	"testing"
+
+	"github.com/peterldowns/pgtestdb"
+	"github.com/specterops/bloodhound/cmd/api/src/config"
+	"github.com/specterops/bloodhound/cmd/api/src/test"
+	"github.com/specterops/bloodhound/cmd/api/src/test/integration/utils"
+	"github.com/specterops/dawgs"
+	"github.com/specterops/dawgs/drivers/pg"
+	"github.com/specterops/dawgs/graph"
 )
 
 func LoadConfiguration(testCtrl test.Controller) config.Configuration {
@@ -38,30 +42,33 @@ func LoadConfiguration(testCtrl test.Controller) config.Configuration {
 	return cfg
 }
 
-func OpenGraphDB(testCtrl test.Controller) graph.Database {
+// OpenGraphDB opens a new graph Database
+//
+// Deprecated: see newer testing guidance on how to open DB connnections, this will be removed in the future as old tests are rewritten.
+func OpenGraphDB(t *testing.T, schema graph.Schema) graph.Database {
 	var (
-		cfg           = LoadConfiguration(testCtrl)
 		graphDatabase graph.Database
-		err           error
 	)
+
+	cfg, err := utils.LoadIntegrationTestConfig()
+	test.RequireNilErrf(t, err, "Failed to Load Integration Test Config: %v", err)
 
 	switch cfg.GraphDriver {
 	case pg.DriverName:
-		graphDatabase, err = dawgs.Open(context.TODO(), cfg.GraphDriver, dawgs.Config{
-			DriverCfg: cfg.Database.PostgreSQLConnectionString(),
+		connConf := pgtestdb.Custom(t, GetPostgresConfig(cfg), pgtestdb.NoopMigrator{})
+		pool, err := pg.NewPool(connConf.URL())
+		test.RequireNilErrf(t, err, "Failed to create new pgx pool: %v", err)
+		graphDatabase, err = dawgs.Open(context.Background(), cfg.GraphDriver, dawgs.Config{
+			ConnectionString: connConf.URL(),
+			Pool:             pool,
 		})
-
-	case neo4j.DriverName:
-		graphDatabase, err = dawgs.Open(context.TODO(), cfg.GraphDriver, dawgs.Config{
-			DriverCfg: cfg.Neo4J.Neo4jConnectionString(),
-		})
+		test.RequireNilErrf(t, err, "Failed connecting to graph database: %v", err)
 
 	default:
-		testCtrl.Fatalf("unsupported graph driver name %s", cfg.GraphDriver)
+		t.Fatalf("unsupported graph driver name %s", cfg.GraphDriver)
 	}
 
-	test.RequireNilErrf(testCtrl, err, "Failed connecting to graph database: %v", err)
-	test.RequireNilErr(testCtrl, graphDatabase.AssertSchema(context.Background(), schema.DefaultGraphSchema()))
+	test.RequireNilErr(t, graphDatabase.AssertSchema(context.Background(), schema))
 
 	return graphDatabase
 }

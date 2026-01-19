@@ -20,36 +20,24 @@ import (
 	"context"
 	"crypto/rand"
 	"encoding/base64"
+	"errors"
 	"fmt"
+	"log/slog"
 	"net/http"
-	"strconv"
 	"time"
 
 	"github.com/gofrs/uuid"
-	"github.com/golang-jwt/jwt/v4"
-	"github.com/specterops/bloodhound/errors"
-	"github.com/specterops/bloodhound/log"
-	"github.com/specterops/bloodhound/src/database/types/null"
-	"github.com/specterops/bloodhound/src/model"
+	"github.com/specterops/bloodhound/cmd/api/src/database/types/null"
+	"github.com/specterops/bloodhound/cmd/api/src/model"
 )
 
 const (
 	ProviderTypeSecret = "secret"
+	ProviderTypeSAML   = "saml"
+	ProviderTypeOIDC   = "oidc"
 
 	HMAC_SHA2_256 = "hmac-sha2-256"
 )
-
-type SessionData struct {
-	jwt.StandardClaims
-}
-
-func (s SessionData) SessionID() (int64, error) {
-	return strconv.ParseInt(s.Id, 10, 64)
-}
-
-func (s SessionData) UserID() (uuid.UUID, error) {
-	return uuid.FromString(s.Subject)
-}
 
 type PermissionOverrides struct {
 	Enabled     bool
@@ -80,7 +68,7 @@ func (s idResolver) GetIdentity(ctx Context) (SimpleIdentity, error) {
 		return SimpleIdentity{
 			ID:    user.ID,
 			Name:  user.PrincipalName,
-			Email: user.EmailAddress.String,
+			Email: user.EmailAddress.ValueOrZero(),
 			Key:   "user_id",
 		}, nil
 	}
@@ -90,23 +78,33 @@ type AuditLogger interface {
 	AppendAuditLog(ctx context.Context, entry model.AuditEntry) error
 }
 
-type Authorizer interface {
-	HasPermission(ctx Context, requiredPermission model.Permission, grantedPermissions model.Permissions) bool
-	AllowsPermission(ctx Context, requiredPermission model.Permission) bool
-	AllowsAllPermissions(ctx Context, requiredPermissions model.Permissions) bool
-	AllowsAtLeastOnePermission(ctx Context, requiredPermissions model.Permissions) bool
-	AuditLogUnauthorizedAccess(request *http.Request)
+type Authorizer struct {
+	auditLogger    AuditLogger
+	getPermissions GetPermissionsFunc
 }
 
-type authorizer struct {
-	auditLogger AuditLogger
+func NewCustomAuthorizer(auditLogger AuditLogger, getPermissionsFn GetPermissionsFunc) Authorizer {
+	if getPermissionsFn == nil {
+		getPermissionsFn = getPermissions
+	}
+	return Authorizer{auditLogger: auditLogger, getPermissions: getPermissionsFn}
 }
 
 func NewAuthorizer(auditLogger AuditLogger) Authorizer {
-	return authorizer{auditLogger: auditLogger}
+	return Authorizer{auditLogger: auditLogger, getPermissions: getPermissions}
 }
 
-func (s authorizer) HasPermission(ctx Context, requiredPermission model.Permission, grantedPermissions model.Permissions) bool {
+type GetPermissionsFunc func(context Context) (model.Permissions, bool)
+
+func getPermissions(ctx Context) (model.Permissions, bool) {
+	if user, isUser := GetUserFromAuthCtx(ctx); isUser {
+		return user.Roles.Permissions(), true
+	}
+
+	return model.Permissions{}, false
+}
+
+func hasPermission(ctx Context, requiredPermission model.Permission, grantedPermissions model.Permissions) bool {
 	if ctx.PermissionOverrides.Enabled {
 		return ctx.PermissionOverrides.Permissions.Has(requiredPermission)
 	}
@@ -114,19 +112,18 @@ func (s authorizer) HasPermission(ctx Context, requiredPermission model.Permissi
 	return grantedPermissions.Has(requiredPermission)
 }
 
-func (s authorizer) AllowsPermission(ctx Context, requiredPermission model.Permission) bool {
-	if user, isUser := GetUserFromAuthCtx(ctx); isUser {
-		return s.HasPermission(ctx, requiredPermission, user.Roles.Permissions())
+func (s Authorizer) AllowsPermission(ctx Context, requiredPermission model.Permission) bool {
+	if grantedPermissions, isAuthed := s.getPermissions(ctx); isAuthed {
+		return hasPermission(ctx, requiredPermission, grantedPermissions)
 	}
 
 	return false
 }
 
-func (s authorizer) AllowsAllPermissions(ctx Context, requiredPermissions model.Permissions) bool {
-	if user, isUser := GetUserFromAuthCtx(ctx); isUser {
-		grantedPermissions := user.Roles.Permissions()
+func (s Authorizer) AllowsAllPermissions(ctx Context, requiredPermissions model.Permissions) bool {
+	if grantedPermissions, isAuthed := s.getPermissions(ctx); isAuthed {
 		for _, permission := range requiredPermissions {
-			if !s.HasPermission(ctx, permission, grantedPermissions) {
+			if !hasPermission(ctx, permission, grantedPermissions) {
 				return false
 			}
 		}
@@ -135,11 +132,10 @@ func (s authorizer) AllowsAllPermissions(ctx Context, requiredPermissions model.
 	return true
 }
 
-func (s authorizer) AllowsAtLeastOnePermission(ctx Context, requiredPermissions model.Permissions) bool {
-	if user, isUser := GetUserFromAuthCtx(ctx); isUser {
-		grantedPermissions := user.Roles.Permissions()
+func (s Authorizer) AllowsAtLeastOnePermission(ctx Context, requiredPermissions model.Permissions) bool {
+	if grantedPermissions, isAuthed := s.getPermissions(ctx); isAuthed {
 		for _, permission := range requiredPermissions {
-			if s.HasPermission(ctx, permission, grantedPermissions) {
+			if hasPermission(ctx, permission, grantedPermissions) {
 				return true
 			}
 		}
@@ -148,24 +144,15 @@ func (s authorizer) AllowsAtLeastOnePermission(ctx Context, requiredPermissions 
 	return false
 }
 
-func (s authorizer) AuditLogUnauthorizedAccess(request *http.Request) {
-	commitId, err := uuid.NewV4()
-	if err != nil {
-		log.Errorf("error generating commit ID for unauthorized access: %s", err.Error())
-	}
-
+func (s Authorizer) AuditLogUnauthorizedAccess(request *http.Request) {
 	// Ignore generating logs for GET operations to reduce noise
 	if request.Method != "GET" {
-		if err := s.auditLogger.AppendAuditLog(
-			request.Context(),
-			model.AuditEntry{
-				Action:   model.AuditLogActionUnauthorizedAccessAttempt,
-				Model:    model.AuditData{"endpoint": request.Method + " " + request.URL.Path},
-				Status:   model.AuditLogStatusFailure,
-				CommitID: commitId,
-			},
-		); err != nil {
-			log.Errorf("error creating audit log for unauthorized access: %s", err.Error())
+		data := model.AuditData{"endpoint": request.Method + " " + request.URL.Path}
+		if auditEntry, err := model.NewAuditEntry(model.AuditLogActionUnauthorizedAccessAttempt, model.AuditLogStatusFailure, data); err != nil {
+			slog.ErrorContext(request.Context(), fmt.Sprintf("Error creating audit log for unauthorized access: %s", err.Error()))
+			return
+		} else if err = s.auditLogger.AppendAuditLog(request.Context(), auditEntry); err != nil {
+			slog.ErrorContext(request.Context(), fmt.Sprintf("Error creating audit log for unauthorized access: %s", err.Error()))
 		}
 	}
 }

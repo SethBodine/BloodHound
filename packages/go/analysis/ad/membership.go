@@ -19,29 +19,30 @@ package ad
 import (
 	"context"
 	"fmt"
+	"log/slog"
 
-	"github.com/specterops/bloodhound/analysis"
-	"github.com/specterops/bloodhound/analysis/impact"
-	"github.com/specterops/bloodhound/dawgs/cardinality"
-	"github.com/specterops/bloodhound/dawgs/graph"
-	"github.com/specterops/bloodhound/dawgs/ops"
-	"github.com/specterops/bloodhound/dawgs/query"
-	"github.com/specterops/bloodhound/dawgs/traversal"
-	"github.com/specterops/bloodhound/graphschema/ad"
-	"github.com/specterops/bloodhound/log"
+	"github.com/specterops/bloodhound/packages/go/analysis"
+	"github.com/specterops/bloodhound/packages/go/analysis/impact"
+	"github.com/specterops/bloodhound/packages/go/bhlog/measure"
+	"github.com/specterops/bloodhound/packages/go/graphschema/ad"
+	"github.com/specterops/dawgs/cardinality"
+	"github.com/specterops/dawgs/graph"
+	"github.com/specterops/dawgs/ops"
+	"github.com/specterops/dawgs/query"
+	"github.com/specterops/dawgs/traversal"
 )
 
 func ResolveAllGroupMemberships(ctx context.Context, db graph.Database, additionalCriteria ...graph.Criteria) (impact.PathAggregator, error) {
-	defer log.Measure(log.LevelInfo, "ResolveAllGroupMemberships")()
+	defer measure.ContextMeasure(ctx, slog.LevelInfo, "ResolveAllGroupMemberships")()
 
 	var (
 		adGroupIDs []graph.ID
 
 		searchCriteria = []graph.Criteria{query.KindIn(query.Relationship(), ad.MemberOf, ad.MemberOfLocalGroup)}
-		traversalMap   = cardinality.ThreadSafeDuplex(cardinality.NewBitmap32())
-		traversalInst  = traversal.NewIDTraversal(db, analysis.MaximumDatabaseParallelWorkers)
-		memberships    = impact.NewThreadSafeAggregator(impact.NewIDA(func() cardinality.Provider[uint32] {
-			return cardinality.NewBitmap32()
+		traversalMap   = cardinality.ThreadSafeDuplex(cardinality.NewBitmap64())
+		traversalInst  = traversal.New(db, analysis.MaximumDatabaseParallelWorkers)
+		memberships    = impact.NewThreadSafeAggregator(impact.NewAggregator(func() cardinality.Provider[uint64] {
+			return cardinality.NewBitmap64()
 		}))
 	)
 
@@ -62,27 +63,32 @@ func ResolveAllGroupMemberships(ctx context.Context, db graph.Database, addition
 		return memberships, err
 	}
 
-	log.Infof("Collected %d groups to resolve", len(adGroupIDs))
+	slog.InfoContext(ctx, fmt.Sprintf("Collected %d groups to resolve", len(adGroupIDs)))
 
 	for _, adGroupID := range adGroupIDs {
-		if traversalMap.Contains(adGroupID.Uint32()) {
+		if traversalMap.Contains(adGroupID.Uint64()) {
 			continue
 		}
 
-		if err := traversalInst.BreadthFirst(ctx, traversal.IDPlan{
-			Root: adGroupID,
-			Delegate: func(ctx context.Context, tx graph.Transaction, segment *graph.IDSegment) ([]*graph.IDSegment, error) {
+		if err := traversalInst.BreadthFirst(ctx, traversal.Plan{
+			Root: graph.NewNode(adGroupID, graph.NewProperties(), ad.Entity, ad.Group),
+			Driver: func(ctx context.Context, tx graph.Transaction, segment *graph.PathSegment) ([]*graph.PathSegment, error) {
 				if nextQuery, err := newTraversalQuery(tx, segment, graph.DirectionInbound, searchCriteria...); err != nil {
 					return nil, err
 				} else {
-					var nextSegments []*graph.IDSegment
+					var nextSegments []*graph.PathSegment
 
 					if err := nextQuery.FetchTriples(func(cursor graph.Cursor[graph.RelationshipTripleResult]) error {
-						for nextTriple := range cursor.Chan() {
-							if traversalMap.CheckedAdd(nextTriple.StartID.Uint32()) {
-								nextSegments = append(nextSegments, segment.Descend(nextTriple.StartID, nextTriple.ID))
+						for next := range cursor.Chan() {
+							nextSegment := segment.Descend(
+								graph.NewNode(next.StartID, graph.NewProperties()),
+								graph.NewRelationship(next.ID, next.StartID, next.StartID, graph.NewProperties(), ad.MemberOf),
+							)
+
+							if traversalMap.CheckedAdd(next.StartID.Uint64()) {
+								nextSegments = append(nextSegments, nextSegment)
 							} else {
-								memberships.AddShortcut(segment.Descend(nextTriple.StartID, nextTriple.ID))
+								memberships.AddShortcut(nextSegment)
 							}
 						}
 
@@ -107,7 +113,7 @@ func ResolveAllGroupMemberships(ctx context.Context, db graph.Database, addition
 	return memberships, nil
 }
 
-func newTraversalQuery(tx graph.Transaction, segment *graph.IDSegment, direction graph.Direction, queryCriteria ...graph.Criteria) (graph.RelationshipQuery, error) {
+func newTraversalQuery(tx graph.Transaction, segment *graph.PathSegment, direction graph.Direction, queryCriteria ...graph.Criteria) (graph.RelationshipQuery, error) {
 	var (
 		traversalCriteria []graph.Criteria
 	)
@@ -115,17 +121,17 @@ func newTraversalQuery(tx graph.Transaction, segment *graph.IDSegment, direction
 	switch direction {
 	case graph.DirectionInbound:
 		traversalCriteria = append(traversalCriteria,
-			query.Equals(query.EndID(), query.Parameter(segment.Node)),
+			query.Equals(query.EndID(), query.Parameter(segment.Node.ID)),
 			query.Not(
-				query.Equals(query.StartID(), query.Parameter(segment.Node)),
+				query.Equals(query.StartID(), query.Parameter(segment.Node.ID)),
 			),
 		)
 
 	case graph.DirectionOutbound:
 		traversalCriteria = append(traversalCriteria,
-			query.Equals(query.StartID(), query.Parameter(segment.Node)),
+			query.Equals(query.StartID(), query.Parameter(segment.Node.ID)),
 			query.Not(
-				query.Equals(query.EndID(), query.Parameter(segment.Node)),
+				query.Equals(query.EndID(), query.Parameter(segment.Node.ID)),
 			),
 		)
 
@@ -140,16 +146,16 @@ func newTraversalQuery(tx graph.Transaction, segment *graph.IDSegment, direction
 	return tx.Relationships().Filter(query.And(traversalCriteria...)), nil
 }
 
-func NodeDuplexByKinds(ctx context.Context, db graph.Database, nodes cardinality.Duplex[uint32]) (*cardinality.ThreadSafeKindBitmap, error) {
-	nodesByKind := cardinality.NewThreadSafeKindBitmap()
+func NodeDuplexByKinds(ctx context.Context, db graph.Database, nodes cardinality.Duplex[uint64]) (*graph.ThreadSafeKindBitmap, error) {
+	nodesByKind := graph.NewThreadSafeKindBitmap()
 
 	return nodesByKind, db.ReadTransaction(ctx, func(tx graph.Transaction) error {
 		return tx.Nodes().Filter(
-			query.InIDs(query.NodeID(), graph.Uint32SliceToIDs(nodes.Slice())...),
+			query.InIDs(query.NodeID(), graph.Uint64SliceToIDs(nodes.Slice())...),
 		).FetchKinds(func(cursor graph.Cursor[graph.KindsResult]) error {
 			for nextResult := range cursor.Chan() {
 				for _, kind := range nextResult.Kinds {
-					nodesByKind.Add(kind, nextResult.ID.Uint32())
+					nodesByKind.Add(kind, nextResult.ID.Uint64())
 				}
 			}
 
@@ -158,28 +164,32 @@ func NodeDuplexByKinds(ctx context.Context, db graph.Database, nodes cardinality
 	})
 }
 
-func FetchPathMembers(ctx context.Context, db graph.Database, root graph.ID, direction graph.Direction, queryCriteria ...graph.Criteria) (cardinality.Duplex[uint32], error) {
-	traversalMap := cardinality.ThreadSafeDuplex(cardinality.NewBitmap32())
+func FetchPathMembers(ctx context.Context, db graph.Database, root graph.ID, direction graph.Direction, queryCriteria ...graph.Criteria) (cardinality.Duplex[uint64], error) {
+	traversalMap := cardinality.ThreadSafeDuplex(cardinality.NewBitmap64())
 
-	return traversalMap, traversal.NewIDTraversal(db, analysis.MaximumDatabaseParallelWorkers).BreadthFirst(ctx, traversal.IDPlan{
-		Root: root,
-		Delegate: func(ctx context.Context, tx graph.Transaction, segment *graph.IDSegment) ([]*graph.IDSegment, error) {
+	return traversalMap, traversal.New(db, analysis.MaximumDatabaseParallelWorkers).BreadthFirst(ctx, traversal.Plan{
+		Root: graph.NewNode(root, graph.NewProperties()),
+		Driver: func(ctx context.Context, tx graph.Transaction, segment *graph.PathSegment) ([]*graph.PathSegment, error) {
 			if nextQuery, err := newTraversalQuery(tx, segment, direction, queryCriteria...); err != nil {
 				return nil, err
+			} else if reverseDirection, err := direction.Reverse(); err != nil {
+				return nil, err
 			} else {
-				var nextSegments []*graph.IDSegment
+				var nextSegments []*graph.PathSegment
 
-				return nextSegments, nextQuery.FetchTriples(func(cursor graph.Cursor[graph.RelationshipTripleResult]) error {
-					for nextTriple := range cursor.Chan() {
-						if nextID, err := direction.PickReverseID(nextTriple.StartID, nextTriple.EndID); err != nil {
-							return err
-						} else if traversalMap.CheckedAdd(nextID.Uint32()) {
-							nextSegments = append(nextSegments, segment.Descend(nextID, nextTriple.ID))
+				return nextSegments, nextQuery.FetchDirection(
+					reverseDirection,
+					func(cursor graph.Cursor[graph.DirectionalResult]) error {
+						for next := range cursor.Chan() {
+							nextSegment := segment.Descend(next.Node, next.Relationship)
+
+							if traversalMap.CheckedAdd(next.Node.ID.Uint64()) {
+								nextSegments = append(nextSegments, nextSegment)
+							}
 						}
-					}
 
-					return cursor.Error()
-				})
+						return cursor.Error()
+					})
 			}
 		},
 	})

@@ -14,69 +14,73 @@
 //
 // SPDX-License-Identifier: Apache-2.0
 
+// organize-imports-ignore
 import React from 'react';
 import { createTheme } from '@mui/material/styles';
 import { CssBaseline, StyledEngineProvider, ThemeProvider } from '@mui/material';
-import { render } from '@testing-library/react';
+import { render, renderHook, waitFor } from '@testing-library/react';
 import { QueryClient, QueryClientProvider } from 'react-query';
-import { NotificationsProvider } from '.';
+import { BrowserRouter } from 'react-router-dom';
+import { NotificationsProvider } from './providers';
+import { darkPalette } from './constants';
+import { SnackbarProvider } from 'notistack';
 
-const customRender = (
-    ui,
-    queryClient = new QueryClient({
+const theme = createTheme(darkPalette);
+const defaultTheme = {
+    ...theme,
+    palette: {
+        ...theme.palette,
+        neutral: { ...darkPalette.neutral },
+        color: { ...darkPalette.color },
+        tertiary: { ...darkPalette.tertiary },
+    },
+};
+
+const createDefaultQueryClient = () => {
+    return new QueryClient({
         defaultOptions: {
             queries: {
                 retry: false,
             },
         },
-    }),
-    {
-        theme = createTheme({
-            palette: {
-                primary: {
-                    main: '#406f8e',
-                    light: '#709dbe',
-                    dark: '#064460',
-                    contrastText: '#ffffff',
-                },
-                neutral: {
-                    main: '#e0e0e0',
-                    light: '#ffffff',
-                    dark: '#cccccc',
-                    contrastText: '#000000',
-                },
-                background: {
-                    paper: '#fafafa',
-                    default: '#e4e9eb',
-                },
-                low: 'rgb(255, 195, 15)',
-                moderate: 'rgb(255, 97, 66)',
-                high: 'rgb(205, 0, 117)',
-                critical: 'rgb(76, 29, 143)',
-            },
-        }),
+    });
+};
 
-        ...renderOptions
-    } = {}
+const createProviders = ({ queryClient, route, theme, children }) => {
+    window.history.pushState({}, 'Initialize', route);
+    return (
+        <QueryClientProvider client={queryClient}>
+            <StyledEngineProvider injectFirst>
+                <ThemeProvider theme={theme}>
+                    <NotificationsProvider>
+                        <CssBaseline />
+                        <BrowserRouter>
+                            <SnackbarProvider>{children}</SnackbarProvider>
+                        </BrowserRouter>
+                    </NotificationsProvider>
+                </ThemeProvider>
+            </StyledEngineProvider>
+        </QueryClientProvider>
+    );
+};
+
+const customRender = (
+    ui,
+    { theme = defaultTheme, route = '/', queryClient = createDefaultQueryClient(), ...renderOptions } = {}
 ) => {
-    const AllTheProviders = ({ children }) => {
-        return (
-            <QueryClientProvider client={queryClient}>
-                <StyledEngineProvider injectFirst>
-                    <ThemeProvider theme={theme}>
-                        <NotificationsProvider>
-                            <CssBaseline />
-                            {children}
-                        </NotificationsProvider>
-                    </ThemeProvider>
-                </StyledEngineProvider>
-            </QueryClientProvider>
-        );
-    };
+    const AllTheProviders = ({ children }) => createProviders({ queryClient, route, theme, children });
     return render(ui, { wrapper: AllTheProviders, ...renderOptions });
+};
+
+const customRenderHook = (
+    hook,
+    { queryClient = createDefaultQueryClient(), theme = defaultTheme, route = '/', ...renderOptions } = {}
+) => {
+    const AllTheProviders = ({ children }) => createProviders({ queryClient, route, theme, children });
+    return renderHook(hook, { wrapper: AllTheProviders, ...renderOptions });
 };
 
 // re-export everything
 export * from '@testing-library/react';
-// override render method
-export { customRender as render };
+// override render and renderHook methods
+export { customRender as render, customRenderHook as renderHook };

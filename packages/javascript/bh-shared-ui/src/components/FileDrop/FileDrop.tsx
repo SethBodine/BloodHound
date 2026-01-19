@@ -16,24 +16,23 @@
 
 import { faArrowDown, faInbox } from '@fortawesome/free-solid-svg-icons';
 import { FontAwesomeIcon } from '@fortawesome/react-fontawesome';
-import { Box, useTheme } from '@mui/material';
-import { useState, DragEvent, MouseEvent, useRef, ChangeEvent } from 'react';
+import { DragEvent, useRef, useState } from 'react';
+import { adaptClickHandlerToKeyDown, cn } from '../../utils';
 
 const FileDrop: React.FC<{
     onDrop: (files: any) => void;
     disabled: boolean;
     accept?: string[];
 }> = ({ onDrop, disabled, accept }) => {
-    const theme = useTheme();
     const inputRef = useRef<HTMLInputElement>(null);
     const [isDragActive, setDragActive] = useState(false);
     const [isHoverActive, setHoverActive] = useState(false);
 
-    const handleClick = (_e: MouseEvent) => {
+    const handleClick = () => {
         if (inputRef.current) inputRef.current.click();
     };
 
-    const handleChange = (_e: ChangeEvent) => onDrop(inputRef.current?.files);
+    const handleChange = () => onDrop(inputRef.current?.files);
 
     const handleDrop = (e: DragEvent) => {
         e.preventDefault();
@@ -53,27 +52,20 @@ const FileDrop: React.FC<{
 
     const handleDragOver = (e: DragEvent) => e.preventDefault();
 
-    const handleMouseEnter = (_e: MouseEvent) => setHoverActive(true);
-    const handleMouseLeave = (_e: MouseEvent) => setHoverActive(false);
+    const handleMouseEnter = () => setHoverActive(true);
+    const handleMouseLeave = () => setHoverActive(false);
 
     const formatAcceptList = () => (accept && accept.length ? accept.join(',') : undefined);
 
     return (
-        <Box
-            height={300}
-            borderRadius={1}
-            border={2}
-            px={20}
-            position='relative'
-            display='flex'
-            flexDirection='column'
-            alignItems='center'
-            justifyContent='center'
-            bgcolor={isHoverActive || isDragActive ? theme.palette.grey[300] : theme.palette.grey[200]}
-            color={theme.palette.grey[600]}
-            borderColor={theme.palette.grey[400]}
-            fontWeight='bold'
-            textAlign='center'>
+        <div
+            className={cn(
+                'cursor-pointer h-80 rounded font-bold text-center border-2 border-contrast px-32 relative flex flex-col items-center justify-center bg-neutral-2',
+                {
+                    'cursor-default opacity-50': disabled,
+                    'bg-neutral-3': isHoverActive || isDragActive || disabled,
+                }
+            )}>
             <input
                 data-testid='ingest-file-upload'
                 disabled={disabled}
@@ -85,21 +77,20 @@ const FileDrop: React.FC<{
                 accept={formatAcceptList()}
             />
             <FontAwesomeIcon icon={isDragActive ? faArrowDown : faInbox} size='3x' />
-            <p>Click here or drag and drop to upload files</p>
-
-            <Box
-                position='absolute'
-                width='100%'
-                height='100%'
+            <p className='pt-2'>Click here or drag and drop to upload JSON or zip/compressed JSON files</p>
+            <div
+                role='button'
+                tabIndex={0}
+                className='absolute size-full'
                 onClick={handleClick}
                 onDragEnter={handleDragEnter}
                 onDragLeave={handleDragLeave}
                 onDragOver={handleDragOver}
                 onMouseEnter={handleMouseEnter}
                 onMouseLeave={handleMouseLeave}
-                onDrop={handleDrop}
-            />
-        </Box>
+                onKeyDown={adaptClickHandlerToKeyDown(handleClick)}
+                onDrop={handleDrop}></div>
+        </div>
     );
 };
 

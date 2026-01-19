@@ -18,26 +18,27 @@ package ad
 
 import (
 	"context"
+	"errors"
 	"fmt"
+	"log/slog"
 	"slices"
 	"sync"
 
-	"github.com/specterops/bloodhound/analysis"
-	"github.com/specterops/bloodhound/analysis/impact"
-	"github.com/specterops/bloodhound/dawgs/cardinality"
-	"github.com/specterops/bloodhound/dawgs/graph"
-	"github.com/specterops/bloodhound/dawgs/ops"
-	"github.com/specterops/bloodhound/dawgs/query"
-	"github.com/specterops/bloodhound/dawgs/traversal"
-	"github.com/specterops/bloodhound/dawgs/util/channels"
-	"github.com/specterops/bloodhound/graphschema/ad"
-	"github.com/specterops/bloodhound/log"
+	"github.com/specterops/bloodhound/packages/go/analysis"
+	"github.com/specterops/bloodhound/packages/go/analysis/impact"
+	"github.com/specterops/bloodhound/packages/go/bhlog/attr"
+	"github.com/specterops/bloodhound/packages/go/graphschema/ad"
+	"github.com/specterops/dawgs/cardinality"
+	"github.com/specterops/dawgs/graph"
+	"github.com/specterops/dawgs/ops"
+	"github.com/specterops/dawgs/query"
+	"github.com/specterops/dawgs/traversal"
+	"github.com/specterops/dawgs/util/channels"
 )
 
-func PostADCSESC3(ctx context.Context, tx graph.Transaction, outC chan<- analysis.CreatePostRelationshipJob, groupExpansions impact.PathAggregator, eca2, domain *graph.Node, cache ADCSCache) error {
-	results := cardinality.NewBitmap32()
-
-	if publishedCertTemplates, ok := cache.PublishedTemplateCache[eca2.ID]; !ok {
+func PostADCSESC3(ctx context.Context, tx graph.Transaction, outC chan<- analysis.CreatePostRelationshipJob, groupExpansions impact.PathAggregator, eca2 *graph.Node, targetDomains *graph.NodeSet, cache ADCSCache) error {
+	results := cardinality.NewBitmap64()
+	if publishedCertTemplates := cache.GetPublishedTemplateCache(eca2.ID); len(publishedCertTemplates) == 0 {
 		return nil
 	} else if collected, err := eca2.Properties.Get(ad.EnrollmentAgentRestrictionsCollected.String()).Bool(); err != nil {
 		return fmt.Errorf("error getting enrollmentagentcollected for eca2 %d: %w", eca2.ID, err)
@@ -65,7 +66,7 @@ func PostADCSESC3(ctx context.Context, tx graph.Transaction, outC chan<- analysi
 				)
 			})); err != nil {
 				if !graph.IsErrNotFound(err) {
-					log.Errorf("Error getting target nodes for esc3 for node %d: %v", certTemplateTwo.ID, err)
+					slog.ErrorContext(ctx, fmt.Sprintf("Error getting target nodes for esc3 for node %d: %v", certTemplateTwo.ID, err))
 				}
 			} else {
 				for _, certTemplateOne := range inboundTemplates {
@@ -73,25 +74,32 @@ func PostADCSESC3(ctx context.Context, tx graph.Transaction, outC chan<- analysi
 						continue
 					}
 
+					var (
+						ecaEnrollersTwo          = cache.GetEnterpriseCAEnrollers(eca2.ID)
+						certTemplateEnrollersOne = cache.GetCertTemplateEnrollers(certTemplateOne.ID)
+						certTemplateEnrollersTwo = cache.GetCertTemplateEnrollers(certTemplateTwo.ID)
+					)
+
 					if publishedECAs, err := FetchCertTemplateCAs(tx, certTemplateOne); err != nil {
-						log.Errorf("error getting cas for cert template %d: %v", certTemplateOne.ID, err)
+						slog.ErrorContext(ctx, fmt.Sprintf("Error getting cas for cert template %d: %v", certTemplateOne.ID, err))
 					} else if publishedECAs.Len() == 0 {
 						continue
 					} else if eARestrictions {
 						if delegatedAgents, err := fetchFirstDegreeNodes(tx, certTemplateTwo, ad.DelegatedEnrollmentAgent); err != nil {
-							log.Errorf("error getting delegated agents for cert template %d: %v", certTemplateTwo.ID, err)
+							slog.ErrorContext(ctx, fmt.Sprintf("Error getting delegated agents for cert template %d: %v", certTemplateTwo.ID, err))
 						} else {
 							for _, eca1 := range publishedECAs {
-								tempResults := CalculateCrossProductNodeSets(groupExpansions,
-									cache.CertTemplateEnrollers[certTemplateOne.ID],
-									cache.CertTemplateEnrollers[certTemplateTwo.ID],
-									cache.EnterpriseCAEnrollers[eca1.ID],
-									cache.EnterpriseCAEnrollers[eca2.ID],
+								tempResults := CalculateCrossProductNodeSets(tx,
+									groupExpansions,
+									certTemplateEnrollersOne,
+									certTemplateEnrollersTwo,
+									cache.GetEnterpriseCAEnrollers(eca1.ID),
+									ecaEnrollersTwo,
 									delegatedAgents.Slice())
 
 								// Add principals to result set unless it's a user and DNS is required
 								if filteredResults, err := filterUserDNSResults(tx, tempResults, certTemplateOne); err != nil {
-									log.Errorf("Error filtering user dns results: %v", err)
+									slog.ErrorContext(ctx, fmt.Sprintf("Error filtering user dns results: %v", err))
 								} else {
 									results.Or(filteredResults)
 								}
@@ -99,14 +107,15 @@ func PostADCSESC3(ctx context.Context, tx graph.Transaction, outC chan<- analysi
 						}
 					} else {
 						for _, eca1 := range publishedECAs {
-							tempResults := CalculateCrossProductNodeSets(groupExpansions,
-								cache.CertTemplateEnrollers[certTemplateOne.ID],
-								cache.CertTemplateEnrollers[certTemplateTwo.ID],
-								cache.EnterpriseCAEnrollers[eca1.ID],
-								cache.EnterpriseCAEnrollers[eca2.ID])
+							tempResults := CalculateCrossProductNodeSets(tx,
+								groupExpansions,
+								certTemplateEnrollersOne,
+								certTemplateEnrollersTwo,
+								cache.GetEnterpriseCAEnrollers(eca1.ID),
+								ecaEnrollersTwo)
 
 							if filteredResults, err := filterUserDNSResults(tx, tempResults, certTemplateOne); err != nil {
-								log.Errorf("Error filtering user dns results: %v", err)
+								slog.ErrorContext(ctx, fmt.Sprintf("Error filtering user dns results: %v", err))
 							} else {
 								results.Or(filteredResults)
 							}
@@ -117,98 +126,111 @@ func PostADCSESC3(ctx context.Context, tx graph.Transaction, outC chan<- analysi
 		}
 	}
 
-	results.Each(func(value uint32) bool {
-		channels.Submit(ctx, outC, analysis.CreatePostRelationshipJob{
-			FromID: graph.ID(value),
-			ToID:   domain.ID,
-			Kind:   ad.ADCSESC3,
-		})
+	results.Each(func(value uint64) bool {
+		for _, domain := range targetDomains.Slice() {
+			channels.Submit(ctx, outC, analysis.CreatePostRelationshipJob{
+				FromID: graph.ID(value),
+				ToID:   domain.ID,
+				Kind:   ad.ADCSESC3,
+			})
+		}
 		return true
 	})
 
 	return nil
 }
 
-func PostEnrollOnBehalfOf(certTemplates []*graph.Node, operation analysis.StatTrackedOperation[analysis.CreatePostRelationshipJob]) error {
+func PostEnrollOnBehalfOf(cache ADCSCache, operation analysis.StatTrackedOperation[analysis.CreatePostRelationshipJob]) error {
 	versionOneTemplates := make([]*graph.Node, 0)
 	versionTwoTemplates := make([]*graph.Node, 0)
-
-	for _, node := range certTemplates {
-		if version, err := node.Properties.Get(ad.SchemaVersion.String()).Float64(); err != nil {
-			log.Errorf("Error getting schema version for cert template %d: %v", node.ID, err)
+	for _, node := range cache.GetCertTemplates() {
+		if version, err := node.Properties.Get(ad.SchemaVersion.String()).Float64(); errors.Is(err, graph.ErrPropertyNotFound) {
+			slog.Warn(fmt.Sprintf("Did not get schema version for cert template %d: %v", node.ID, err))
+		} else if err != nil {
+			slog.Error(fmt.Sprintf("Error getting schema version for cert template %d: %v", node.ID, err))
+		} else if version == 1 {
+			versionOneTemplates = append(versionOneTemplates, node)
+		} else if version >= 2 {
+			versionTwoTemplates = append(versionTwoTemplates, node)
 		} else {
-			if version == 1 {
-				versionOneTemplates = append(versionOneTemplates, node)
-			} else if version >= 2 {
-				versionTwoTemplates = append(versionTwoTemplates, node)
-			} else {
-				log.Warnf("Got cert template %d with an invalid version %d", node.ID, version)
+			slog.Warn(fmt.Sprintf("Got cert template %d with an invalid version %0.f", node.ID, version))
+		}
+	}
+
+	for _, domain := range cache.GetDomains() {
+		innerDomain := domain
+
+		for _, enterpriseCA := range cache.GetEnterpriseCertAuthorities() {
+			innerEnterpriseCA := enterpriseCA
+
+			if cache.DoesCAChainProperlyToDomain(innerEnterpriseCA, innerDomain) {
+				if publishedCertTemplates := cache.GetPublishedTemplateCache(enterpriseCA.ID); len(publishedCertTemplates) == 0 {
+					return nil
+				} else {
+					operation.Operation.SubmitReader(func(ctx context.Context, tx graph.Transaction, outC chan<- analysis.CreatePostRelationshipJob) error {
+						if results, err := EnrollOnBehalfOfVersionTwo(tx, versionTwoTemplates, publishedCertTemplates, innerDomain); err != nil {
+							return err
+						} else {
+							for _, result := range results {
+								if !channels.Submit(ctx, outC, result) {
+									return nil
+								}
+							}
+
+							return nil
+						}
+					})
+
+					operation.Operation.SubmitReader(func(ctx context.Context, tx graph.Transaction, outC chan<- analysis.CreatePostRelationshipJob) error {
+						if results, err := EnrollOnBehalfOfVersionOne(tx, versionOneTemplates, publishedCertTemplates, innerDomain); err != nil {
+							return err
+						} else {
+							for _, result := range results {
+								if !channels.Submit(ctx, outC, result) {
+									return nil
+								}
+							}
+
+							return nil
+						}
+					})
+				}
 			}
 		}
 	}
 
-	operation.Operation.SubmitReader(func(ctx context.Context, tx graph.Transaction, outC chan<- analysis.CreatePostRelationshipJob) error {
-		if results, err := EnrollOnBehalfOfVersionTwo(tx, versionTwoTemplates, certTemplates); err != nil {
-			return err
-		} else {
-			for _, result := range results {
-				if !channels.Submit(ctx, outC, result) {
-					return nil
-				}
-			}
-
-			return nil
-		}
-	})
-
-	operation.Operation.SubmitReader(func(ctx context.Context, tx graph.Transaction, outC chan<- analysis.CreatePostRelationshipJob) error {
-		if results, err := EnrollOnBehalfOfVersionOne(tx, versionOneTemplates, certTemplates); err != nil {
-			return err
-		} else {
-			for _, result := range results {
-				if !channels.Submit(ctx, outC, result) {
-					return nil
-				}
-			}
-
-			return nil
-		}
-	})
-
 	return nil
 }
 
-func EnrollOnBehalfOfVersionTwo(tx graph.Transaction, versionTwoCertTemplates, allCertTemplates []*graph.Node) ([]analysis.CreatePostRelationshipJob, error) {
+func EnrollOnBehalfOfVersionTwo(tx graph.Transaction, versionTwoCertTemplates, publishedTemplates []*graph.Node, domainNode *graph.Node) ([]analysis.CreatePostRelationshipJob, error) {
 	results := make([]analysis.CreatePostRelationshipJob, 0)
-	for _, certTemplateOne := range allCertTemplates {
-		if hasBadEku, err := certTemplateHasEku(certTemplateOne, EkuAnyPurpose); err != nil {
-			log.Errorf("error getting ekus for cert template %d: %w", certTemplateOne.ID, err)
+	for _, certTemplateOne := range publishedTemplates {
+		if hasBadEku, err := certTemplateHasEku(certTemplateOne, EkuAnyPurpose); errors.Is(err, graph.ErrPropertyNotFound) {
+			slog.Warn(fmt.Sprintf("Did not get EffectiveEKUs for cert template %d: %v", certTemplateOne.ID, err))
+		} else if err != nil {
+			slog.Error(fmt.Sprintf("Error getting EffectiveEKUs for cert template %d: %v", certTemplateOne.ID, err))
 		} else if hasBadEku {
 			continue
-		} else if hasEku, err := certTemplateHasEku(certTemplateOne, EkuCertRequestAgent); err != nil {
-			log.Errorf("error getting ekus for cert template %d: %w", certTemplateOne.ID, err)
+		} else if hasEku, err := certTemplateHasEku(certTemplateOne, EkuCertRequestAgent); errors.Is(err, graph.ErrPropertyNotFound) {
+			slog.Warn(fmt.Sprintf("Did not get EffectiveEKUs for cert template %d: %v", certTemplateOne.ID, err))
+		} else if err != nil {
+			slog.Error(fmt.Sprintf("Error getting EffectiveEKUs for cert template %d: %v", certTemplateOne.ID, err))
 		} else if !hasEku {
-			continue
-		} else if domainNode, err := getDomainForCertTemplate(tx, certTemplateOne); err != nil {
-			log.Errorf("error getting domain node for cert template %d: %w", certTemplateOne.ID, err)
-		} else if isLinked, err := DoesCertTemplateLinkToDomain(tx, certTemplateOne, domainNode); err != nil {
-			log.Errorf("error fetching paths from cert template %d to domain: %w", certTemplateOne.ID, err)
-		} else if !isLinked {
 			continue
 		} else {
 			for _, certTemplateTwo := range versionTwoCertTemplates {
 				if certTemplateOne.ID == certTemplateTwo.ID {
 					continue
 				} else if authorizedSignatures, err := certTemplateTwo.Properties.Get(ad.AuthorizedSignatures.String()).Float64(); err != nil {
-					log.Errorf("Error getting authorized signatures for cert template %d: %w", certTemplateTwo.ID, err)
+					slog.Error(fmt.Sprintf("Error getting authorized signatures for cert template %d: %v", certTemplateTwo.ID, err))
 				} else if authorizedSignatures < 1 {
 					continue
 				} else if applicationPolicies, err := certTemplateTwo.Properties.Get(ad.ApplicationPolicies.String()).StringSlice(); err != nil {
-					log.Errorf("Error getting application policies for cert template %d: %w", certTemplateTwo.ID, err)
+					slog.Error(fmt.Sprintf("Error getting application policies for cert template %d: %v", certTemplateTwo.ID, err))
 				} else if !slices.Contains(applicationPolicies, EkuCertRequestAgent) {
 					continue
 				} else if isLinked, err := DoesCertTemplateLinkToDomain(tx, certTemplateTwo, domainNode); err != nil {
-					log.Errorf("error fetch paths from cert template %d to domain: %w", certTemplateTwo.ID, err)
+					slog.Error(fmt.Sprintf("Error fetch paths from cert template %d to domain: %v", certTemplateTwo.ID, err))
 				} else if !isLinked {
 					continue
 				} else {
@@ -226,7 +248,7 @@ func EnrollOnBehalfOfVersionTwo(tx graph.Transaction, versionTwoCertTemplates, a
 }
 
 func certTemplateHasEku(certTemplate *graph.Node, targetEkus ...string) (bool, error) {
-	if ekus, err := certTemplate.Properties.Get(ad.EKUs.String()).StringSlice(); err != nil {
+	if ekus, err := certTemplate.Properties.Get(ad.EffectiveEKUs.String()).StringSlice(); err != nil {
 		return false, err
 	} else {
 		for _, eku := range ekus {
@@ -241,25 +263,21 @@ func certTemplateHasEku(certTemplate *graph.Node, targetEkus ...string) (bool, e
 	}
 }
 
-func EnrollOnBehalfOfVersionOne(tx graph.Transaction, versionOneCertTemplates []*graph.Node, allCertTemplates []*graph.Node) ([]analysis.CreatePostRelationshipJob, error) {
+func EnrollOnBehalfOfVersionOne(tx graph.Transaction, versionOneCertTemplates []*graph.Node, publishedTemplates []*graph.Node, domainNode *graph.Node) ([]analysis.CreatePostRelationshipJob, error) {
 	results := make([]analysis.CreatePostRelationshipJob, 0)
 
-	for _, certTemplateOne := range allCertTemplates {
+	for _, certTemplateOne := range publishedTemplates {
 		//prefilter as much as we can first
-		if hasEku, err := certTemplateHasEkuOrAll(certTemplateOne, EkuCertRequestAgent, EkuAnyPurpose); err != nil {
-			log.Errorf("Error checking ekus for certtemplate %d: %w", certTemplateOne.ID, err)
+		if hasEku, err := certTemplateHasEkuOrAll(certTemplateOne, EkuCertRequestAgent, EkuAnyPurpose); errors.Is(err, graph.ErrPropertyNotFound) {
+			slog.Warn(fmt.Sprintf("Error checking ekus for certtemplate %d: %v", certTemplateOne.ID, err))
+		} else if err != nil {
+			slog.Error(fmt.Sprintf("Error checking ekus for certtemplate %d: %v", certTemplateOne.ID, err))
 		} else if !hasEku {
-			continue
-		} else if domainNode, err := getDomainForCertTemplate(tx, certTemplateOne); err != nil {
-			log.Errorf("Error getting domain node for certtemplate %d: %w", certTemplateOne.ID, err)
-		} else if hasPath, err := DoesCertTemplateLinkToDomain(tx, certTemplateOne, domainNode); err != nil {
-			log.Errorf("Error fetching paths from certtemplate %d to domain: %w", certTemplateOne.ID, err)
-		} else if !hasPath {
 			continue
 		} else {
 			for _, certTemplateTwo := range versionOneCertTemplates {
 				if hasPath, err := DoesCertTemplateLinkToDomain(tx, certTemplateTwo, domainNode); err != nil {
-					log.Errorf("Error getting domain node for certtemplate %d: %w", certTemplateTwo.ID, err)
+					slog.Error(fmt.Sprintf("Error getting domain node for certtemplate %d: %v", certTemplateTwo.ID, err))
 				} else if !hasPath {
 					continue
 				} else {
@@ -278,34 +296,83 @@ func EnrollOnBehalfOfVersionOne(tx graph.Transaction, versionOneCertTemplates []
 
 func isStartCertTemplateValidESC3(template *graph.Node) bool {
 	if reqManagerApproval, err := template.Properties.Get(ad.RequiresManagerApproval.String()).Bool(); err != nil {
-		log.Errorf("error getting reqmanagerapproval for certtemplate %d: %v", template.ID, err)
+		if errors.Is(err, graph.ErrPropertyNotFound) {
+			slog.Warn(
+				"Node missing reqmanagerapproval for certtemplate",
+				slog.Int("node_id", int(template.ID)),
+				attr.Error(err),
+			)
+		} else {
+			slog.Error(
+				"Error getting reqmanagerapproval for certtemplate",
+				slog.Int("node_id", int(template.ID)),
+				attr.Error(err),
+			)
+		}
+		return false
 	} else if reqManagerApproval {
 		return false
-	} else if schemaVersion, err := template.Properties.Get(ad.SchemaVersion.String()).Float64(); err != nil {
-		log.Errorf("error getting schemaversion for certtemplate %d: %v", template.ID, err)
-	} else if schemaVersion == 1 {
-		return true
-	} else if schemaVersion > 1 {
-		if authorizedSignatures, err := template.Properties.Get(ad.AuthorizedSignatures.String()).Float64(); err != nil {
-			log.Errorf("error getting authorizedsignatures for certtemplate %d: %v", template.ID, err)
-		} else if authorizedSignatures > 0 {
-			return false
+	}
+
+	schemaVersion, err := template.Properties.Get(ad.SchemaVersion.String()).Float64()
+	if err != nil {
+		if errors.Is(err, graph.ErrPropertyNotFound) {
+			slog.Warn(
+				"Node missing schemaversion for certtemplate",
+				slog.Int("node_id", int(template.ID)),
+				attr.Error(err),
+			)
 		} else {
-			return true
+			slog.Error(
+				"Error getting schemaversion for certtemplate",
+				slog.Int("node_id", int(template.ID)),
+				attr.Error(err),
+			)
 		}
+		return false
+	}
+
+	if schemaVersion == 1 {
+		return true
+	}
+
+	if schemaVersion > 1 {
+		authorizedSignatures, err := template.Properties.Get(ad.AuthorizedSignatures.String()).Float64()
+		if err != nil {
+			if errors.Is(err, graph.ErrPropertyNotFound) {
+				slog.Warn(
+					"Node missing authorizedsignatures for certtemplate",
+					slog.Int("node_id", int(template.ID)),
+					attr.Error(err),
+				)
+			} else {
+				slog.Error(
+					"Error getting authorizedsignatures for certtemplate",
+					slog.Int("node_id", int(template.ID)),
+					attr.Error(err),
+				)
+			}
+		}
+		return authorizedSignatures <= 0
 	}
 
 	return false
 }
 
 func isEndCertTemplateValidESC3(template *graph.Node) bool {
-	if authEnabled, err := template.Properties.Get(ad.AuthenticationEnabled.String()).Bool(); err != nil {
-		log.Errorf("error getting authenabled for cert template %d: %v", template.ID, err)
+	if authEnabled, err := template.Properties.Get(ad.AuthenticationEnabled.String()).Bool(); errors.Is(err, graph.ErrPropertyNotFound) {
+		slog.Warn(fmt.Sprintf("Did not getting authenabled for cert template %d: %v", template.ID, err))
+		return false
+	} else if err != nil {
+		slog.Error(fmt.Sprintf("Error getting authenabled for cert template %d: %v", template.ID, err))
 		return false
 	} else if !authEnabled {
 		return false
-	} else if reqManagerApproval, err := template.Properties.Get(ad.RequiresManagerApproval.String()).Bool(); err != nil {
-		log.Errorf("error getting reqManagerApproval for cert template %d: %v", template.ID, err)
+	} else if reqManagerApproval, err := template.Properties.Get(ad.RequiresManagerApproval.String()).Bool(); errors.Is(err, graph.ErrPropertyNotFound) {
+		slog.Warn(fmt.Sprintf("Did not getting reqManagerApproval for cert template %d: %v", template.ID, err))
+		return false
+	} else if err != nil {
+		slog.Error(fmt.Sprintf("Error getting reqManagerApproval for cert template %d: %v", template.ID, err))
 		return false
 	} else if reqManagerApproval {
 		return false
@@ -315,7 +382,7 @@ func isEndCertTemplateValidESC3(template *graph.Node) bool {
 }
 
 func certTemplateHasEkuOrAll(certTemplate *graph.Node, targetEkus ...string) (bool, error) {
-	if ekus, err := certTemplate.Properties.Get(ad.EKUs.String()).StringSlice(); err != nil {
+	if ekus, err := certTemplate.Properties.Get(ad.EffectiveEKUs.String()).StringSlice(); err != nil {
 		return false, err
 	} else if len(ekus) == 0 {
 		return true, nil
@@ -332,91 +399,140 @@ func certTemplateHasEkuOrAll(certTemplate *graph.Node, targetEkus ...string) (bo
 	}
 }
 
-func getDomainForCertTemplate(tx graph.Transaction, certTemplate *graph.Node) (*graph.Node, error) {
-	if domainSid, err := certTemplate.Properties.Get(ad.DomainSID.String()).String(); err != nil {
-		return &graph.Node{}, err
-	} else if domainNode, err := analysis.FetchNodeByObjectID(tx, domainSid); err != nil {
-		return &graph.Node{}, err
-	} else {
-		return domainNode, nil
-	}
-}
-
 func GetADCSESC3EdgeComposition(ctx context.Context, db graph.Database, edge *graph.Relationship) (graph.PathSet, error) {
-	var (
-		startNode *graph.Node
+	/*
+		MATCH p1 = (x)-[:MemberOf*0..]->()-[:GenericAll|Enroll|AllExtendedRights]->(ct1:CertTemplate)-[:PublishedTo]->(eca1:EnterpriseCA)-[:TrustedForNTAuth]->(:NTAuthStore)-[:NTAuthStoreFor]->(d)
+		WHERE x.objectid = "S-1-5-21-83094068-830424655-2031507174-500"
+		AND d.objectid = "S-1-5-21-83094068-830424655-2031507174"
+		AND ct1.requiresmanagerapproval = false
+		AND (ct1.schemaversion = 1 OR ct1.authorizedsignatures = 0)
+		AND (
+			x:Group
+			OR x:Computer
+			OR (
+			x:User
+			AND ct1.subjectaltrequiredns = false
+			AND ct1.subjectaltrequiredomaindns = false
+			)
+		)
 
-		traversalInst           = traversal.New(db, analysis.MaximumDatabaseParallelWorkers)
-		paths                   = graph.PathSet{}
-		path1CandidateSegments  = map[graph.ID][]*graph.PathSegment{}
-		path2CandidateSegments  = map[graph.ID][]*graph.PathSegment{}
-		lock                    = &sync.Mutex{}
-		path1CertTemplates      = cardinality.NewBitmap32()
-		path2CertTemplates      = cardinality.NewBitmap32()
-		enterpriseCANodes       = cardinality.NewBitmap32()
-		enterpriseCASegments    = map[graph.ID][]*graph.PathSegment{}
-		path2CandidateTemplates = cardinality.NewBitmap32()
-		enrollOnBehalfOfPaths   graph.PathSet
+		MATCH p2 = (x)-[:MemberOf*0..]->()-[:GenericAll|Enroll|AllExtendedRights]->(ct2:CertTemplate)-[:PublishedTo]->(eca2:EnterpriseCA)-[:TrustedForNTAuth]->(:NTAuthStore)-[:NTAuthStoreFor]->(d)
+		WHERE ct2.authenticationenabled = true
+		AND ct2.requiresmanagerapproval = false
+
+		MATCH p3 = (ct1)-[:EnrollOnBehalfOf]->(ct2)
+
+		MATCH p4 = (x)-[:MemberOf*0..]->()-[:Enroll]->(eca1)
+
+		MATCH p5 = (x)-[:MemberOf*0..]->()-[:Enroll]->(eca2)
+
+		MATCH p6 = (eca1)-[:IssuedSignedBy|EnterpriseCAFor*1..]->(:RootCA)-[:RootCAFor]->(d)
+		MATCH p7 = (eca2)-[:IssuedSignedBy|EnterpriseCAFor*1..]->(:RootCA)-[:RootCAFor]->(d)
+
+		OPTIONAL MATCH p8 = (x)-[:MemberOf*0..]->()-[:DelegatedEnrollmentAgent]->(ct2)
+
+		WITH *
+		WHERE (
+			NOT eca2.hasenrollmentagentrestrictions = True
+			OR p8 IS NOT NULL
+		)
+
+		RETURN p1,p2,p3,p4,p5,p6,p7,p8
+	*/
+	var (
+		startNode  *graph.Node
+		startNodes = graph.NodeSet{}
+
+		traversalInst            = traversal.New(db, analysis.MaximumDatabaseParallelWorkers)
+		paths                    = graph.PathSet{}
+		path1CandidateSegments   = map[graph.ID][]*graph.PathSegment{}
+		path2CandidateSegments   = map[graph.ID][]*graph.PathSegment{}
+		path6_7CandidateSegments = map[graph.ID][]*graph.PathSegment{}
+		path8CandidateSegments   = map[graph.ID][]*graph.PathSegment{}
+		lock                     = &sync.Mutex{}
+		path1CertTemplates       = cardinality.NewBitmap64()
+		path2CertTemplates       = cardinality.NewBitmap64()
+		enterpriseCANodes        = cardinality.NewBitmap64()
+		enterpriseCASegments     = map[graph.ID][]*graph.PathSegment{}
+		path2CandidateTemplates  = cardinality.NewBitmap64()
+		enrollOnBehalfOfPaths    graph.PathSet
 	)
 
 	if err := db.ReadTransaction(ctx, func(tx graph.Transaction) error {
-		if node, err := ops.FetchNode(tx, edge.StartID); err != nil {
+		var err error
+		if startNode, err = ops.FetchNode(tx, edge.StartID); err != nil {
 			return err
 		} else {
-			startNode = node
 			return nil
 		}
 	}); err != nil {
 		return nil, err
 	}
 
-	//Start by fetching all EnterpriseCA nodes that our user has Enroll rights on via group membership or directly (P4/P5)
-	if err := traversalInst.BreadthFirst(ctx, traversal.Plan{
-		Root: startNode,
-		Driver: ADCSESC3Path3Pattern().Do(func(terminal *graph.PathSegment) error {
-			enterpriseCANode := terminal.Search(func(nextSegment *graph.PathSegment) bool {
-				return nextSegment.Node.Kinds.ContainsOneOf(ad.EnterpriseCA)
-			})
-
-			lock.Lock()
-			enterpriseCASegments[enterpriseCANode.ID] = append(enterpriseCASegments[enterpriseCANode.ID], terminal)
-			enterpriseCANodes.Add(enterpriseCANode.ID.Uint32())
-			lock.Unlock()
-
+	// Add startnode, Auth. Users, and Everyone to start nodes
+	if err := db.ReadTransaction(ctx, func(tx graph.Transaction) error {
+		if nodeSet, err := FetchAuthUsersAndEveryoneGroups(tx); err != nil {
+			return err
+		} else {
+			startNodes.AddSet(nodeSet)
 			return nil
-		}),
+		}
 	}); err != nil {
 		return nil, err
 	}
+	startNodes.Add(startNode)
+
+	//Start by fetching all EnterpriseCA nodes that our user has Enroll rights on via group membership or directly (P4/P5)
+	for _, n := range startNodes.Slice() {
+		if err := traversalInst.BreadthFirst(ctx, traversal.Plan{
+			Root: n,
+			Driver: ADCSESC3Path3Pattern().Do(func(terminal *graph.PathSegment) error {
+				enterpriseCANode := terminal.Search(func(nextSegment *graph.PathSegment) bool {
+					return nextSegment.Node.Kinds.ContainsOneOf(ad.EnterpriseCA)
+				})
+
+				lock.Lock()
+				enterpriseCASegments[enterpriseCANode.ID] = append(enterpriseCASegments[enterpriseCANode.ID], terminal)
+				enterpriseCANodes.Add(enterpriseCANode.ID.Uint64())
+				lock.Unlock()
+
+				return nil
+			}),
+		}); err != nil {
+			return nil, err
+		}
+	}
 
 	//Use the enterprise CA nodes we gathered to filter the first set of paths for P1
-	if err := traversalInst.BreadthFirst(ctx, traversal.Plan{
-		Root: startNode,
-		Driver: ADCSESC3Path1Pattern(edge.EndID, enterpriseCANodes).Do(func(terminal *graph.PathSegment) error {
-			certTemplateNode := terminal.Search(func(nextSegment *graph.PathSegment) bool {
-				return nextSegment.Node.Kinds.ContainsOneOf(ad.CertTemplate)
-			})
+	for _, n := range startNodes.Slice() {
+		if err := traversalInst.BreadthFirst(ctx, traversal.Plan{
+			Root: n,
+			Driver: ADCSESC3Path1Pattern(edge.EndID, enterpriseCANodes).Do(func(terminal *graph.PathSegment) error {
+				certTemplateNode := terminal.Search(func(nextSegment *graph.PathSegment) bool {
+					return nextSegment.Node.Kinds.ContainsOneOf(ad.CertTemplate)
+				})
 
-			lock.Lock()
-			path1CandidateSegments[certTemplateNode.ID] = append(path1CandidateSegments[certTemplateNode.ID], terminal)
+				lock.Lock()
+				path1CandidateSegments[certTemplateNode.ID] = append(path1CandidateSegments[certTemplateNode.ID], terminal)
 
-			// Check that CT is valid for user start nodes
-			userStartNode := startNode.Kinds.ContainsOneOf(ad.User)
-			if !userStartNode || certTemplateValidForUserVictim(certTemplateNode) {
-				path1CertTemplates.Add(certTemplateNode.ID.Uint32())
-			}
-			lock.Unlock()
+				// Check that CT is valid for user start nodes
+				userStartNode := startNode.Kinds.ContainsOneOf(ad.User)
+				if !userStartNode || certTemplateValidForUserVictim(certTemplateNode) {
+					path1CertTemplates.Add(certTemplateNode.ID.Uint64())
+				}
+				lock.Unlock()
 
-			return nil
-		})}); err != nil {
-		return nil, err
+				return nil
+			})}); err != nil {
+			return nil, err
+		}
 	}
 
 	//Find all cert templates we have EnrollOnBehalfOf from our first group of templates to prefilter again
 	if err := db.ReadTransaction(ctx, func(tx graph.Transaction) error {
 		if p, err := ops.FetchPathSet(tx.Relationships().Filter(
 			query.And(
-				query.InIDs(query.StartID(), cardinality.DuplexToGraphIDs(path1CertTemplates)...),
+				query.InIDs(query.StartID(), graph.DuplexToGraphIDs(path1CertTemplates)...),
 				query.KindIn(query.Relationship(), ad.EnrollOnBehalfOf),
 				query.KindIn(query.End(), ad.CertTemplate)),
 		)); err != nil {
@@ -430,110 +546,150 @@ func GetADCSESC3EdgeComposition(ctx context.Context, db graph.Database, edge *gr
 	}
 
 	for _, path := range enrollOnBehalfOfPaths {
-		path2CandidateTemplates.Add(path.Terminal().ID.Uint32())
+		path2CandidateTemplates.Add(path.Terminal().ID.Uint64())
 	}
 
 	//Use our enterprise ca + candidate templates as filters for the third query (P2)
-	if err := traversalInst.BreadthFirst(ctx, traversal.Plan{
-		Root: startNode,
-		Driver: ADCSESC3Path2Pattern(edge.EndID, enterpriseCANodes, path2CandidateTemplates).Do(func(terminal *graph.PathSegment) error {
-			certTemplateNode := terminal.Search(func(nextSegment *graph.PathSegment) bool {
-				return nextSegment.Node.Kinds.ContainsOneOf(ad.CertTemplate)
-			})
+	for _, n := range startNodes.Slice() {
+		if err := traversalInst.BreadthFirst(ctx, traversal.Plan{
+			Root: n,
+			Driver: ADCSESC3Path2Pattern(edge.EndID, enterpriseCANodes, path2CandidateTemplates).Do(func(terminal *graph.PathSegment) error {
+				certTemplateNode := terminal.Search(func(nextSegment *graph.PathSegment) bool {
+					return nextSegment.Node.Kinds.ContainsOneOf(ad.CertTemplate)
+				})
 
-			lock.Lock()
-			path2CandidateSegments[certTemplateNode.ID] = append(path2CandidateSegments[certTemplateNode.ID], terminal)
-			path2CertTemplates.Add(certTemplateNode.ID.Uint32())
-			lock.Unlock()
+				lock.Lock()
+				path2CandidateSegments[certTemplateNode.ID] = append(path2CandidateSegments[certTemplateNode.ID], terminal)
+				path2CertTemplates.Add(certTemplateNode.ID.Uint64())
+				lock.Unlock()
 
+				return nil
+			})}); err != nil {
+			return nil, err
+		}
+	}
+
+	//Manifest P6/P7 keyed to enterprise ca nodes
+	for ecaID := range enterpriseCASegments {
+		if err := db.ReadTransaction(ctx, func(tx graph.Transaction) error {
+			if ecaNode, err := ops.FetchNode(tx, ecaID); err != nil {
+				return err
+			} else {
+				if err := traversalInst.BreadthFirst(ctx, traversal.Plan{
+					Root: ecaNode,
+					Driver: ADCSESC3Path6_7Pattern(edge.EndID).Do(func(terminal *graph.PathSegment) error {
+						eca := terminal.Path().Root()
+						if eca.ID == ecaID {
+							lock.Lock()
+							path6_7CandidateSegments[ecaID] = append(path6_7CandidateSegments[ecaID], terminal)
+							lock.Unlock()
+						}
+						return nil
+					}),
+				}); err != nil {
+					return err
+				}
+			}
 			return nil
-		})}); err != nil {
-		return nil, err
+		}); err != nil {
+			return nil, err
+		}
+	}
+
+	//Manifest p8 keyed to certificate template nodes
+	for _, n := range startNodes.Slice() {
+		if err := traversalInst.BreadthFirst(ctx, traversal.Plan{
+			Root: n,
+			Driver: ADCSESC3Path8Pattern(path2CandidateTemplates).Do(func(terminal *graph.PathSegment) error {
+				certTemplateNode := terminal.Search(func(nextSegment *graph.PathSegment) bool {
+					return nextSegment.Node.Kinds.ContainsOneOf(ad.CertTemplate)
+				})
+
+				lock.Lock()
+				path8CandidateSegments[certTemplateNode.ID] = append(path8CandidateSegments[certTemplateNode.ID], terminal)
+				lock.Unlock()
+				return nil
+			}),
+		}); err != nil {
+			return nil, err
+		}
 	}
 
 	//EnrollOnBehalfOf is used to join P1 and P2, so we'll use it as the key
 	for _, p3 := range enrollOnBehalfOfPaths {
+
 		ct1 := p3.Root()
 		ct2 := p3.Terminal()
 
-		if !path1CertTemplates.Contains(ct1.ID.Uint32()) {
+		if !path1CertTemplates.Contains(ct1.ID.Uint64()) {
 			continue
 		}
 
-		if !path2CertTemplates.Contains(ct2.ID.Uint32()) {
+		if !path2CertTemplates.Contains(ct2.ID.Uint64()) {
 			continue
 		}
 
 		p1paths := path1CandidateSegments[ct1.ID]
 		p2paths := path2CandidateSegments[ct2.ID]
 
-		/*
-			MATCH p1 = (x)-[:GenericAll|Enroll|AllExtendedRights]->(ct1:CertTemplate)-[PublishedTo]->(eca1:EnterpriseCA)-[:IssuedSignedBy|EnterpriseCAFor*1..]->(rca:RootCA)-[:RootCAFor]->(d:Domain)
-			WHERE x.objectid = "<principal objectid>"
-			WHERE d.objectid = "<domain objectid>"
-			AND ct1.requiresmanagerapproval = false
-			AND ct1.schemaversion = 1 OR (ct1.schemaversion > 1 AND ct1.authorizedsignatures = 0)
-
-			MATCH p2 = (x)-[:GenericAll|Enroll|AllExtendedRights]->(ct2:CertTemplate)-[PublishedTo]->(eca2:EnterpriseCA)-[:TrustedForNTAuth]->(:NTAuthStore)-[:NTAuthStoreFor]->(d)
-			WHERE ct2.authenticationenabled = true
-			AND ct2.requiresmanagerapproval = false
-
-			MATCH p3 = (ct1)-[:EnrollOnBehalfOf]->(ct2)
-
-			MATCH p4 = (x)-[:Enroll]->(eca1)
-
-			MATCH p5 = (x)-[:Enroll]->(eca2)
-
-			RETURN p1,p2,p3,p4,p5
-		*/
-
 		for _, p1 := range p1paths {
 			eca1 := p1.Search(func(nextSegment *graph.PathSegment) bool {
-				return nextSegment.Node.Kinds.ContainsOneOf(ad.EnterpriseCA) && enterpriseCANodes.Contains(nextSegment.Node.ID.Uint32())
+				return nextSegment.Node.Kinds.ContainsOneOf(ad.EnterpriseCA) && enterpriseCANodes.Contains(nextSegment.Node.ID.Uint64())
 			})
 
 			for _, p2 := range p2paths {
 				eca2 := p2.Search(func(nextSegment *graph.PathSegment) bool {
-					return nextSegment.Node.Kinds.ContainsOneOf(ad.EnterpriseCA) && enterpriseCANodes.Contains(nextSegment.Node.ID.Uint32())
+					return nextSegment.Node.Kinds.ContainsOneOf(ad.EnterpriseCA) && enterpriseCANodes.Contains(nextSegment.Node.ID.Uint64())
 				})
 
-				if collected, err := eca2.Properties.Get(ad.EnrollmentAgentRestrictionsCollected.String()).Bool(); err != nil {
-					log.Errorf("error getting enrollmentagentcollected for eca2 %d: %v", eca2.ID, err)
-				} else if collected {
-					if hasRestrictions, err := eca2.Properties.Get(ad.HasEnrollmentAgentRestrictions.String()).Bool(); err != nil {
-						log.Errorf("error getting hasenrollmentagentrestrictions for ca %d: %v", eca2.ID, err)
-					} else if hasRestrictions {
-						if p6, err := getDelegatedEnrollmentAgentPath(ctx, startNode, ct2, db); err != nil {
-							log.Infof("Error getting p6 for composition: %v", err)
-						} else if p6.Len() > 0 {
-							for _, p4 := range enterpriseCASegments[eca1.ID] {
-								paths.AddPath(p4.Path())
-							}
-
-							for _, p5 := range enterpriseCASegments[eca2.ID] {
-								paths.AddPath(p5.Path())
-							}
-
-							paths.AddPath(p3)
-							paths.AddPath(p1.Path())
-							paths.AddPath(p2.Path())
-							paths.AddPathSet(p6)
-						}
-					}
-				} else {
-					for _, p4 := range enterpriseCASegments[eca1.ID] {
-						paths.AddPath(p4.Path())
-					}
-
-					for _, p5 := range enterpriseCASegments[eca2.ID] {
-						paths.AddPath(p5.Path())
-					}
-
-					paths.AddPath(p3)
-					paths.AddPath(p1.Path())
-					paths.AddPath(p2.Path())
+				// Verify P6 and P7 paths exists
+				p6segments, ok := path6_7CandidateSegments[eca1.ID]
+				if !ok {
+					continue
+				}
+				p7segments, ok := path6_7CandidateSegments[eca2.ID]
+				if !ok {
+					continue
 				}
 
+				if collected, err := eca2.Properties.Get(ad.EnrollmentAgentRestrictionsCollected.String()).Bool(); err != nil {
+					slog.ErrorContext(ctx, fmt.Sprintf("Error getting enrollmentagentcollected for eca2 %d: %v", eca2.ID, err))
+				} else if collected {
+					if hasRestrictions, err := eca2.Properties.Get(ad.HasEnrollmentAgentRestrictions.String()).Bool(); err != nil {
+						slog.ErrorContext(ctx, fmt.Sprintf("Error getting hasenrollmentagentrestrictions for ca %d: %v", eca2.ID, err))
+					} else if hasRestrictions {
+
+						// Verify p8 path exist
+						p8segments, ok := path8CandidateSegments[ct2.ID]
+						if !ok {
+							continue
+						}
+
+						for _, p8 := range p8segments {
+							paths.AddPath(p8.Path())
+						}
+					}
+				}
+
+				for _, p4 := range enterpriseCASegments[eca1.ID] {
+					paths.AddPath(p4.Path())
+				}
+
+				for _, p5 := range enterpriseCASegments[eca2.ID] {
+					paths.AddPath(p5.Path())
+				}
+
+				for _, p6 := range p6segments {
+					paths.AddPath(p6.Path())
+				}
+
+				for _, p7 := range p7segments {
+					paths.AddPath(p7.Path())
+				}
+
+				paths.AddPath(p3)
+				paths.AddPath(p1.Path())
+				paths.AddPath(p2.Path())
 			}
 		}
 	}
@@ -541,24 +697,7 @@ func GetADCSESC3EdgeComposition(ctx context.Context, db graph.Database, edge *gr
 	return paths, nil
 }
 
-func getDelegatedEnrollmentAgentPath(ctx context.Context, startNode, certTemplate2 *graph.Node, db graph.Database) (graph.PathSet, error) {
-	var pathSet graph.PathSet
-
-	return pathSet, db.ReadTransaction(ctx, func(tx graph.Transaction) error {
-		if paths, err := ops.FetchPathSet(tx.Relationships().Filter(query.And(
-			query.InIDs(query.StartID(), startNode.ID),
-			query.InIDs(query.EndID(), certTemplate2.ID),
-			query.KindIn(query.Relationship(), ad.DelegatedEnrollmentAgent),
-		))); err != nil {
-			return err
-		} else {
-			pathSet = paths
-			return nil
-		}
-	})
-}
-
-func ADCSESC3Path1Pattern(domainId graph.ID, enterpriseCAs cardinality.Duplex[uint32]) traversal.PatternContinuation {
+func ADCSESC3Path1Pattern(domainId graph.ID, enterpriseCAs cardinality.Duplex[uint64]) traversal.PatternContinuation {
 	return traversal.NewPattern().OutboundWithDepth(0, 0, query.And(
 		query.Kind(query.Relationship(), ad.MemberOf),
 		query.Kind(query.End(), ad.Group),
@@ -579,20 +718,20 @@ func ADCSESC3Path1Pattern(domainId graph.ID, enterpriseCAs cardinality.Duplex[ui
 		)).
 		Outbound(query.And(
 			query.KindIn(query.Relationship(), ad.PublishedTo),
-			query.InIDs(query.End(), cardinality.DuplexToGraphIDs(enterpriseCAs)...),
+			query.InIDs(query.End(), graph.DuplexToGraphIDs(enterpriseCAs)...),
 			query.Kind(query.End(), ad.EnterpriseCA),
 		)).
 		Outbound(query.And(
-			query.KindIn(query.Relationship(), ad.IssuedSignedBy, ad.EnterpriseCAFor),
-			query.Kind(query.End(), ad.RootCA),
+			query.KindIn(query.Relationship(), ad.TrustedForNTAuth),
+			query.Kind(query.End(), ad.NTAuthStore),
 		)).
 		Outbound(query.And(
-			query.KindIn(query.Relationship(), ad.RootCAFor),
+			query.KindIn(query.Relationship(), ad.NTAuthStoreFor),
 			query.Equals(query.EndID(), domainId),
 		))
 }
 
-func ADCSESC3Path2Pattern(domainId graph.ID, enterpriseCAs, candidateTemplates cardinality.Duplex[uint32]) traversal.PatternContinuation {
+func ADCSESC3Path2Pattern(domainId graph.ID, enterpriseCAs, candidateTemplates cardinality.Duplex[uint64]) traversal.PatternContinuation {
 	return traversal.NewPattern().OutboundWithDepth(0, 0, query.And(
 		query.Kind(query.Relationship(), ad.MemberOf),
 		query.Kind(query.End(), ad.Group),
@@ -602,12 +741,12 @@ func ADCSESC3Path2Pattern(domainId graph.ID, enterpriseCAs, candidateTemplates c
 			query.KindIn(query.End(), ad.CertTemplate),
 			query.Equals(query.EndProperty(ad.AuthenticationEnabled.String()), true),
 			query.Equals(query.EndProperty(ad.RequiresManagerApproval.String()), false),
-			query.InIDs(query.EndID(), cardinality.DuplexToGraphIDs(candidateTemplates)...),
+			query.InIDs(query.EndID(), graph.DuplexToGraphIDs(candidateTemplates)...),
 		)).
 		Outbound(query.And(
 			query.KindIn(query.Relationship(), ad.PublishedTo),
 			query.KindIn(query.End(), ad.EnterpriseCA),
-			query.InIDs(query.End(), cardinality.DuplexToGraphIDs(enterpriseCAs)...))).
+			query.InIDs(query.End(), graph.DuplexToGraphIDs(enterpriseCAs)...))).
 		Outbound(query.And(
 			query.KindIn(query.Relationship(), ad.TrustedForNTAuth),
 			query.Kind(query.End(), ad.NTAuthStore),
@@ -626,5 +765,32 @@ func ADCSESC3Path3Pattern() traversal.PatternContinuation {
 		Outbound(query.And(
 			query.KindIn(query.End(), ad.EnterpriseCA),
 			query.KindIn(query.Relationship(), ad.Enroll),
+		))
+}
+
+func ADCSESC3Path6_7Pattern(domainId graph.ID) traversal.PatternContinuation {
+	return traversal.NewPattern().
+		OutboundWithDepth(0, 0, query.And(
+			query.KindIn(query.Relationship(), ad.IssuedSignedBy, ad.EnterpriseCAFor),
+			query.KindIn(query.End(), ad.EnterpriseCA, ad.AIACA),
+		)).
+		Outbound(query.And(
+			query.KindIn(query.Relationship(), ad.IssuedSignedBy, ad.EnterpriseCAFor),
+			query.Kind(query.End(), ad.RootCA),
+		)).
+		Outbound(query.And(
+			query.KindIn(query.Relationship(), ad.RootCAFor),
+			query.Equals(query.EndID(), domainId),
+		))
+}
+
+func ADCSESC3Path8Pattern(candidateTemplates cardinality.Duplex[uint64]) traversal.PatternContinuation {
+	return traversal.NewPattern().OutboundWithDepth(0, 0, query.And(
+		query.Kind(query.Relationship(), ad.MemberOf),
+		query.Kind(query.End(), ad.Group),
+	)).
+		Outbound(query.And(
+			query.KindIn(query.Relationship(), ad.DelegatedEnrollmentAgent),
+			query.InIDs(query.EndID(), graph.DuplexToGraphIDs(candidateTemplates)...),
 		))
 }

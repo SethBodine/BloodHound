@@ -15,15 +15,16 @@
 // SPDX-License-Identifier: Apache-2.0
 
 import { apiClient } from 'bh-shared-ui';
-import { FlatGraphResponse, GraphData, GraphResponse, StyledGraphEdge, StyledGraphNode } from 'js-client-library';
 import identity from 'lodash/identity';
 import throttle from 'lodash/throttle';
-import { Coordinates } from 'sigma/types';
+import type { SigmaNodeEventPayload } from 'sigma/sigma';
+import type { Coordinates, MouseCoords } from 'sigma/types';
 import { logout } from 'src/ducks/auth/authSlice';
 import { addSnackbar } from 'src/ducks/global/actions';
-import { isLink, isNode } from 'src/ducks/graph/utils';
 import { Glyph } from 'src/rendering/programs/node.glyphs';
 import { store } from 'src/store';
+
+const IGNORE_401_LOGOUT = ['/api/v2/login', '/api/v2/logout', '/api/v2/features'];
 
 export const getDatesInRange = (startDate: Date, endDate: Date) => {
     const date = new Date(startDate.getTime());
@@ -51,6 +52,23 @@ export const getUsername = (user: any): string | undefined => {
     return undefined;
 };
 
+/**
+ * Reusable method to prevent defaults for mouse move, right click, and double click
+ *
+ * @param event Sigma or mouse event object used to cancel defaults
+ */
+export const preventAllDefaults = (event: SigmaNodeEventPayload | MouseCoords) => {
+    if ('preventSigmaDefault' in event && typeof event.preventSigmaDefault === 'function') {
+        event.preventSigmaDefault();
+    }
+
+    // Prevent events for MouseCoords type
+    if ('original' in event && event.original instanceof MouseEvent) {
+        event.original.preventDefault();
+        event.original.stopPropagation();
+    }
+};
+
 const throttledLogout = throttle(() => {
     store.dispatch(logout());
 }, 2000);
@@ -74,19 +92,40 @@ export const initializeBHEClient = () => {
 
         (error) => {
             if (error?.response) {
-                if (
-                    error?.response?.status === 401 &&
-                    error?.response?.config.url !== '/api/v2/login' &&
-                    error?.response?.config.url !== '/api/v2/logout'
+                if (error?.response?.status === 401) {
+                    if (IGNORE_401_LOGOUT.includes(error?.response?.config.url) === false) {
+                        throttledLogout();
+                    }
+                } else if (
+                    error?.response?.status === 403 &&
+                    !error?.response?.config.url.match('/api/v2/bloodhound-users/[a-z0-9-]+/secret')
                 ) {
-                    throttledLogout();
-                } else if (error?.response?.status === 403) {
                     store.dispatch(addSnackbar('Permission denied!', 'permissionDenied'));
                 }
             }
             return Promise.reject(error);
         }
     );
+};
+
+type ThemedLabels = {
+    labelColor: string;
+    backgroundColor: string;
+    highlightedBackground: string;
+    highlightedText: string;
+};
+
+type ThemedGlyph = {
+    colors: {
+        backgroundColor: string;
+        color: string;
+    };
+};
+
+export type ThemedOptions = {
+    labels: ThemedLabels;
+    nodeBorderColor: string;
+    glyph: ThemedGlyph;
 };
 
 export type NodeParams = {
@@ -101,7 +140,8 @@ export type NodeParams = {
     label?: string;
     glyphs?: Glyph[];
     forceLabel?: boolean;
-};
+    hidden?: boolean;
+} & ThemedLabels;
 
 export interface Index<T> {
     [id: string]: T;
@@ -118,7 +158,6 @@ export type EdgeParams = {
     size: number;
     type: string;
     label: string;
-    color: string;
     exploreGraphId: string;
     groupPosition?: number;
     groupSize?: number;
@@ -126,82 +165,4 @@ export type EdgeParams = {
     control?: Coordinates;
     controlInViewport?: Coordinates;
     forceLabel?: boolean;
-};
-
-const getLastSeenValue = (object: any): string => {
-    if (object.lastSeen) return object.lastSeen;
-    if (object.data) {
-        if (object.data.lastSeen) return object.data.lastSeen;
-        if (object.data.lastseen) return object.data.lastseen;
-    }
-
-    return '';
-};
-
-export const transformFlatGraphResponse = (graph: FlatGraphResponse): GraphData => {
-    const result: GraphData = {
-        nodes: {},
-        edges: [],
-    };
-
-    for (const [key, item] of Object.entries(graph)) {
-        if (isNode(item)) {
-            const node = item as StyledGraphNode;
-            const lastSeen = getLastSeenValue(node);
-            result.nodes[key] = {
-                label: node.label.text || '',
-                kind: node.data.nodetype,
-                objectId: node.data.objectid,
-                isTierZero: !!(node.data.system_tags && node.data.system_tags.indexOf('admin_tier_0') !== -1),
-                lastSeen: lastSeen,
-            };
-        } else if (isLink(item)) {
-            const edge = item as StyledGraphEdge;
-            const lastSeen = getLastSeenValue(edge);
-            result.edges.push({
-                impactPercent: edge.data ? edge.data.composite_risk_impact_percent : undefined,
-                source: edge.id1,
-                target: edge.id2,
-                label: edge.label.text || '',
-                kind: edge.label.text || '',
-                lastSeen: lastSeen,
-                exploreGraphId: key || `${edge.id1}_${edge.label.text}_${edge.id2}`,
-                data: { ...(edge.data || {}), lastseen: lastSeen },
-            });
-        }
-    }
-
-    return result;
-};
-
-export const transformToFlatGraphResponse = (graph: GraphResponse) => {
-    const result: any = {};
-    for (const [key, value] of Object.entries(graph.data.nodes)) {
-        const lastSeen = getLastSeenValue(value);
-        result[key] = {
-            label: {
-                text: value.label,
-            },
-            data: {
-                nodetype: value.kind,
-                name: value.label,
-                objectid: value.objectId,
-                system_tags: value.isTierZero ? 'admin_tier_0' : undefined,
-                lastseen: lastSeen,
-            },
-        };
-    }
-    for (const edge of graph.data.edges) {
-        const lastSeen = getLastSeenValue(edge);
-        result[`${edge.source}_${edge.kind}_${edge.target}`] = {
-            id1: edge.source,
-            id2: edge.target,
-            label: {
-                text: edge.label,
-            },
-            lastSeen: lastSeen,
-            data: { ...(edge.data || {}), lastseen: lastSeen },
-        };
-    }
-    return result;
-};
+} & ThemedLabels;

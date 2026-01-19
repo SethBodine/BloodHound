@@ -15,16 +15,16 @@
 // SPDX-License-Identifier: Apache-2.0
 
 //go:build serial_integration
-// +build serial_integration
 
 package migration_test
 
 import (
 	"context"
-	"github.com/specterops/bloodhound/src/model"
-	"github.com/specterops/bloodhound/src/test/integration"
-	"github.com/stretchr/testify/require"
 	"testing"
+
+	"github.com/specterops/bloodhound/cmd/api/src/model"
+	"github.com/specterops/bloodhound/cmd/api/src/test/integration"
+	"github.com/stretchr/testify/require"
 )
 
 func TestMigration_AssetGroups(t *testing.T) {

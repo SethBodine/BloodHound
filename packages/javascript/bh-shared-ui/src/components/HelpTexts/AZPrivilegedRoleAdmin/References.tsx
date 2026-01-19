@@ -14,15 +14,15 @@
 //
 // SPDX-License-Identifier: Apache-2.0
 
+import { Box, Link } from '@mui/material';
 import { FC } from 'react';
-import { Link, Box } from '@mui/material';
 
 const References: FC = () => {
     return (
-        <Box sx={{ overflowX: 'auto' }}>
+        <Box className='overflow-x-auto'>
             <Link
                 target='_blank'
-                rel='noopener'
+                rel='noopener noreferrer'
                 href='https://powerzure.readthedocs.io/en/latest/Functions/operational.html#add-azureadrole'>
                 https://powerzure.readthedocs.io/en/latest/Functions/operational.html#add-azureadrole
             </Link>

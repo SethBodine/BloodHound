@@ -14,23 +14,22 @@
 //
 // SPDX-License-Identifier: Apache-2.0
 
-import { Alert, Box, Paper, Skeleton, Typography, useTheme } from '@mui/material';
+import { Alert, Box, Paper, Skeleton, Typography } from '@mui/material';
+import { CollectorCardList, DocumentationLinks, PageWithTitle, apiClient } from 'bh-shared-ui';
+import { CommunityCollectorType } from 'js-client-library';
 import fileDownload from 'js-file-download';
 import { useDispatch } from 'react-redux';
-import { apiClient } from 'bh-shared-ui';
-import { CollectorCardList, PageWithTitle } from 'bh-shared-ui';
 import { addSnackbar } from 'src/ducks/global/actions';
-import { CollectorType, useGetCollectorsByType } from 'src/hooks/useCollectors';
+import { useGetCollectorsByType } from 'src/hooks/useCollectors';
 
 const DownloadCollectors = () => {
     /* Hooks */
-    const theme = useTheme();
     const dispatch = useDispatch();
     const sharpHoundCollectorsQuery = useGetCollectorsByType('sharphound');
     const azureHoundCollectorsQuery = useGetCollectorsByType('azurehound');
 
     /* Event Handlers */
-    const downloadCollector = (collectorType: CollectorType, version: string) => {
+    const downloadCollector = (collectorType: CommunityCollectorType, version: string) => {
         apiClient
             .downloadCollector(collectorType, version)
             .then((res) => {
@@ -42,12 +41,14 @@ const DownloadCollectors = () => {
             .catch((err) => {
                 console.error(err);
                 dispatch(
-                    addSnackbar('This file could not be downloaded. Please try again.', 'downloadCollectorFailure')
+                    addSnackbar('This file could not be downloaded. Please try again.', 'downloadCollectorFailure', {
+                        autoHideDuration: null,
+                    })
                 );
             });
     };
 
-    const downloadCollectorChecksum = (collectorType: CollectorType, version: string) => {
+    const downloadCollectorChecksum = (collectorType: CommunityCollectorType, version: string) => {
         apiClient
             .downloadCollectorChecksum(collectorType, version)
             .then((res) => {
@@ -61,7 +62,8 @@ const DownloadCollectors = () => {
                 dispatch(
                     addSnackbar(
                         'This file could not be downloaded. Please try again.',
-                        'downloadCollectorChecksumFailure'
+                        'downloadCollectorChecksumFailure',
+                        { autoHideDuration: null }
                     )
                 );
             });
@@ -69,8 +71,18 @@ const DownloadCollectors = () => {
 
     /* Implementation */
     return (
-        <PageWithTitle title='Download Collectors' data-testid='download-collectors'>
-            <Box display='grid' gap={theme.spacing(4)}>
+        <PageWithTitle
+            title='Download Collectors'
+            data-testid='download-collectors'
+            pageDescription={
+                <Typography variant='body2' paragraph>
+                    To get started, collect data using SharpHound or AzureHound.
+                    <br />
+                    BloodHound CE supports both {DocumentationLinks.sharpHoundCELink} and{' '}
+                    {DocumentationLinks.azureHoundCELink} collectors.
+                </Typography>
+            }>
+            <div className='grid gap-8'>
                 {(sharpHoundCollectorsQuery.isError ||
                     azureHoundCollectorsQuery.isError ||
                     sharpHoundCollectorsQuery.data?.data.versions.length === 0) && (
@@ -148,7 +160,7 @@ const DownloadCollectors = () => {
                         />
                     )}
                 </Box>
-            </Box>
+            </div>
         </PageWithTitle>
     );
 };

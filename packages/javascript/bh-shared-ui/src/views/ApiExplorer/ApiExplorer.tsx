@@ -15,12 +15,12 @@
 // SPDX-License-Identifier: Apache-2.0
 
 import React, { Suspense } from 'react';
-import { GraphProgress } from '../../components';
+import 'swagger-ui-react/swagger-ui.css';
+import GraphProgress from '../../components/GraphProgress';
 import { HideEditionTagsPlugin } from './swagger/HideEditionTagsPlugin';
+import { OperationsEditionPlugin } from './swagger/OperationsEditionPlugin';
 import { OperationsFilterPlugin } from './swagger/OperationsFilterPlugin';
 import { OperationsLayoutPlugin } from './swagger/OperationsLayoutPlugin';
-import 'swagger-ui-react/swagger-ui.css';
-import { OperationsEditionPlugin } from './swagger/OperationsEditionPlugin';
 
 const SwaggerUI = React.lazy(() => import('swagger-ui-react'));
 
@@ -44,7 +44,7 @@ const ApiExplorer: React.FC = () => {
     return (
         <Suspense fallback={<GraphProgress loading={true} />}>
             <SwaggerUI
-                url='/api/v2/swagger/doc.json'
+                url='/api/v2/spec'
                 requestInterceptor={authInterceptor}
                 plugins={[
                     HideEditionTagsPlugin,

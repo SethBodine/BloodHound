@@ -1,31 +1,34 @@
 // Copyright 2023 Specter Ops, Inc.
-// 
+//
 // Licensed under the Apache License, Version 2.0
 // you may not use this file except in compliance with the License.
 // You may obtain a copy of the License at
-// 
+//
 //     http://www.apache.org/licenses/LICENSE-2.0
-// 
+//
 // Unless required by applicable law or agreed to in writing, software
 // distributed under the License is distributed on an "AS IS" BASIS,
 // WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
 // See the License for the specific language governing permissions and
 // limitations under the License.
-// 
+//
 // SPDX-License-Identifier: Apache-2.0
 
 package analysis
 
 import (
 	"context"
+	"fmt"
+	"log/slog"
 	"sort"
 
-	"github.com/specterops/bloodhound/dawgs/graph"
-	"github.com/specterops/bloodhound/dawgs/ops"
-	"github.com/specterops/bloodhound/dawgs/query"
-	"github.com/specterops/bloodhound/dawgs/util/channels"
-	"github.com/specterops/bloodhound/graphschema/common"
-	"github.com/specterops/bloodhound/log"
+	"github.com/specterops/bloodhound/packages/go/bhlog/level"
+	"github.com/specterops/bloodhound/packages/go/bhlog/measure"
+	"github.com/specterops/bloodhound/packages/go/graphschema/common"
+	"github.com/specterops/dawgs/graph"
+	"github.com/specterops/dawgs/ops"
+	"github.com/specterops/dawgs/query"
+	"github.com/specterops/dawgs/util/channels"
 )
 
 func statsSortedKeys(value map[graph.Kind]int) []graph.Kind {
@@ -88,31 +91,69 @@ func (s PostProcessingStats) Merge(other PostProcessingStats) {
 
 func (s PostProcessingStats) LogStats() {
 	// Only output stats during debug runs
-	if log.GlobalLevel() > log.LevelDebug {
+	if level.GlobalAccepts(slog.LevelDebug) {
 		return
 	}
 
-	log.Debugf("Relationships deleted before post-processing:")
+	slog.Debug("Relationships deleted before post-processing:")
 
 	for _, relationship := range statsSortedKeys(s.RelationshipsDeleted) {
 		if numDeleted := s.RelationshipsDeleted[relationship]; numDeleted > 0 {
-			log.Debugf("    %s %d", relationship.String(), numDeleted)
+			slog.Debug(fmt.Sprintf("    %s %d", relationship.String(), numDeleted))
 		}
 	}
 
-	log.Debugf("Relationships created after post-processing:")
+	slog.Debug("Relationships created after post-processing:")
 
 	for _, relationship := range statsSortedKeys(s.RelationshipsCreated) {
 		if numDeleted := s.RelationshipsCreated[relationship]; numDeleted > 0 {
-			log.Debugf("    %s %d", relationship.String(), s.RelationshipsCreated[relationship])
+			slog.Debug(fmt.Sprintf("    %s %d", relationship.String(), s.RelationshipsCreated[relationship]))
 		}
 	}
 }
 
+//These were created for the new composition method. It was scrapped for the current initiative, but will be useful later
+//type CompositionInfo struct {
+//	CompositionID int64
+//	EdgeIDs       []graph.ID
+//	NodeIDs       []graph.ID
+//}
+//
+//func (s CompositionInfo) HasComposition() bool {
+//	return len(s.EdgeIDs) > 0 || len(s.NodeIDs) > 0
+//}
+
+//
+//func (s CompositionInfo) GetCompositionEdges() model.EdgeCompositionEdges {
+//	edges := make(model.EdgeCompositionEdges, len(s.EdgeIDs))
+//	for i, edgeID := range s.EdgeIDs {
+//		edges[i] = model.EdgeCompositionEdge{
+//			PostProcessedEdgeID: s.CompositionID,
+//			CompositionEdgeID:   edgeID.Int64(),
+//		}
+//	}
+//
+//	return edges
+//}
+
+//func (s CompositionInfo) GetCompositionNodes() model.EdgeCompositionNodes {
+//	edges := make(model.EdgeCompositionNodes, len(s.EdgeIDs))
+//	for i, nodeID := range s.NodeIDs {
+//		edges[i] = model.EdgeCompositionNode{
+//			PostProcessedEdgeID: s.CompositionID,
+//			CompositionNodeID:   nodeID.Int64(),
+//		}
+//	}
+//
+//	return edges
+//}
+
 type CreatePostRelationshipJob struct {
-	FromID graph.ID
-	ToID   graph.ID
-	Kind   graph.Kind
+	FromID        graph.ID
+	ToID          graph.ID
+	Kind          graph.Kind
+	RelProperties map[string]any
+	//CompositionInfo CompositionInfo
 }
 
 type DeleteRelationshipJob struct {
@@ -120,8 +161,8 @@ type DeleteRelationshipJob struct {
 	ID   graph.ID
 }
 
-func DeleteTransitEdges(ctx context.Context, db graph.Database, fromKind, toKind graph.Kind, targetRelationships ...graph.Kind) (*AtomicPostProcessingStats, error) {
-	defer log.Measure(log.LevelInfo, "Finished deleting transit edges")()
+func DeleteTransitEdges(ctx context.Context, db graph.Database, baseKinds graph.Kinds, targetRelationships ...graph.Kind) (*AtomicPostProcessingStats, error) {
+	defer measure.ContextMeasure(ctx, slog.LevelInfo, "Finished deleting transit edges")()
 
 	var (
 		relationshipIDs []graph.ID
@@ -134,9 +175,9 @@ func DeleteTransitEdges(ctx context.Context, db graph.Database, fromKind, toKind
 		if err := db.ReadTransaction(ctx, func(tx graph.Transaction) error {
 			fetchedRelationshipIDs, err := ops.FetchRelationshipIDs(tx.Relationships().Filterf(func() graph.Criteria {
 				return query.And(
-					query.Kind(query.Start(), fromKind),
+					query.KindIn(query.Start(), baseKinds...),
 					query.Kind(query.Relationship(), closureKindCopy),
-					query.Kind(query.End(), toKind),
+					query.KindIn(query.End(), baseKinds...),
 				)
 			}))
 
@@ -171,7 +212,7 @@ func NodesWithoutRelationshipsFilter() graph.Criteria {
 }
 
 func ClearOrphanedNodes(ctx context.Context, db graph.Database) error {
-	defer log.Measure(log.LevelInfo, "Finished deleting orphaned nodes")()
+	defer measure.ContextMeasure(ctx, slog.LevelInfo, "Finished deleting orphaned nodes")()
 
 	var operation = ops.StartNewOperation[graph.ID](ops.OperationContext{
 		Parent:     ctx,

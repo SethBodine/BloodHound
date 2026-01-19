@@ -14,8 +14,8 @@
 //
 // SPDX-License-Identifier: Apache-2.0
 
-import { FC } from 'react';
 import { Link, Typography } from '@mui/material';
+import { FC } from 'react';
 
 const Opsec: FC = () => {
     return (
@@ -75,7 +75,7 @@ const Opsec: FC = () => {
                 audit configurations can be found at
                 <Link
                     target='_blank'
-                    rel='noopener'
+                    rel='noopener noreferrer'
                     href='https://github.com/NetSPI/PowerUpSQL/blob/master/templates/tsql/Audit%20Command%20Execution%20Template.sql'>
                     https://github.com/NetSPI/PowerUpSQL/blob/master/templates/tsql/Audit%20Command%20Execution%20Template.sql
                 </Link>

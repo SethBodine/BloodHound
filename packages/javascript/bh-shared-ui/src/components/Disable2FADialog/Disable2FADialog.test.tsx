@@ -14,8 +14,8 @@
 //
 // SPDX-License-Identifier: Apache-2.0
 
-import { render, screen, waitFor } from '../../test-utils';
 import userEvent from '@testing-library/user-event';
+import { render, screen, waitFor } from '../../test-utils';
 
 import { rest } from 'msw';
 import { setupServer } from 'msw/node';
@@ -42,7 +42,7 @@ const server = setupServer(
     rest.get(`/api/v2/self`, (req, res, ctx) => {
         return res(ctx.json({ data: testUser }));
     }),
-    rest.delete(`/api/v2/bloodhound-users/${testUser.id}/mfa`, (req, res, ctx) => {
+    rest.delete(`/api/v2/bloodhound-users/${testUser.id}/mfa`, (req, res) => {
         return res();
     })
 );

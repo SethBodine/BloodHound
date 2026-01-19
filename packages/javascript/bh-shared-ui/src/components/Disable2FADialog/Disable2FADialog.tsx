@@ -14,16 +14,8 @@
 //
 // SPDX-License-Identifier: Apache-2.0
 
-import {
-    Alert,
-    Button,
-    Dialog,
-    DialogActions,
-    DialogContent,
-    DialogContentText,
-    DialogTitle,
-    TextField,
-} from '@mui/material';
+import { Button } from '@bloodhoundenterprise/doodleui';
+import { Alert, Dialog, DialogActions, DialogContent, DialogContentText, DialogTitle, TextField } from '@mui/material';
 import React from 'react';
 
 const Disable2FADialog: React.FC<{
@@ -34,8 +26,19 @@ const Disable2FADialog: React.FC<{
     error?: string;
     secret: string;
     onSecretChange: (e: any) => void;
+    showPasswordConfirmation?: boolean;
     contentText: string;
-}> = ({ open, onClose, onCancel, onSave, error, secret, onSecretChange, contentText }) => {
+}> = ({
+    open,
+    onClose,
+    onCancel,
+    onSave,
+    error,
+    secret,
+    onSecretChange,
+    showPasswordConfirmation = true,
+    contentText,
+}) => {
     const handleOnSave: React.FormEventHandler = (e) => {
         e.preventDefault();
         onSave(secret);
@@ -52,28 +55,28 @@ const Disable2FADialog: React.FC<{
                     </Alert>
                     <DialogContentText>{contentText}</DialogContentText>
 
-                    <TextField
-                        id='secret'
-                        name='secret'
-                        value={secret}
-                        onChange={onSecretChange}
-                        type='password'
-                        label='Password'
-                        variant='outlined'
-                        margin='dense'
-                        fullWidth
-                        autoFocus
-                        error={!!error}
-                        helperText={error}
-                    />
+                    {showPasswordConfirmation && (
+                        <TextField
+                            id='secret'
+                            name='secret'
+                            value={secret}
+                            onChange={onSecretChange}
+                            type='password'
+                            label='Password'
+                            variant='outlined'
+                            margin='dense'
+                            fullWidth
+                            autoFocus
+                            error={!!error}
+                            helperText={error}
+                        />
+                    )}
                 </DialogContent>
                 <DialogActions>
-                    <Button color='inherit' onClick={onCancel}>
+                    <Button type='button' variant='tertiary' onClick={onCancel}>
                         Cancel
                     </Button>
-                    <Button color='primary' type='submit'>
-                        Disable Multi-Factor Authentication
-                    </Button>
+                    <Button type='submit'>Disable Multi-Factor Authentication</Button>
                 </DialogActions>
             </form>
         </Dialog>

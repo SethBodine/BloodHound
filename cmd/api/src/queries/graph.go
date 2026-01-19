@@ -21,39 +21,41 @@ package queries
 import (
 	"bytes"
 	"context"
+	"errors"
 	"fmt"
+	"log/slog"
 	"net/http"
 	"net/url"
+	"slices"
 	"sort"
 	"strconv"
 	"strings"
 	"sync"
 	"time"
 
-	"github.com/specterops/bloodhound/cypher/backend/cypher"
-	"github.com/specterops/bloodhound/cypher/backend/pgsql"
-	"github.com/specterops/bloodhound/dawgs/drivers/pg"
-	"github.com/specterops/bloodhound/src/config"
-	"github.com/specterops/bloodhound/src/services/agi"
-
-	bhCtx "github.com/specterops/bloodhound/src/ctx"
+	"github.com/specterops/dawgs/cypher/models/walk"
 
 	"github.com/gorilla/mux"
-	"github.com/specterops/bloodhound/analysis"
-	"github.com/specterops/bloodhound/cache"
-	"github.com/specterops/bloodhound/cypher/analyzer"
-	"github.com/specterops/bloodhound/cypher/frontend"
-	"github.com/specterops/bloodhound/dawgs/graph"
-	"github.com/specterops/bloodhound/dawgs/ops"
-	"github.com/specterops/bloodhound/dawgs/query"
-	"github.com/specterops/bloodhound/errors"
-	"github.com/specterops/bloodhound/graphschema/ad"
-	"github.com/specterops/bloodhound/graphschema/azure"
-	"github.com/specterops/bloodhound/graphschema/common"
-	"github.com/specterops/bloodhound/log"
-	"github.com/specterops/bloodhound/src/api/bloodhoundgraph"
-	"github.com/specterops/bloodhound/src/model"
-	"github.com/specterops/bloodhound/src/utils"
+	"github.com/specterops/bloodhound/cmd/api/src/api/bloodhoundgraph"
+	"github.com/specterops/bloodhound/cmd/api/src/config"
+	"github.com/specterops/bloodhound/cmd/api/src/model"
+	"github.com/specterops/bloodhound/cmd/api/src/services/agi"
+	"github.com/specterops/bloodhound/cmd/api/src/utils"
+	"github.com/specterops/bloodhound/packages/go/analysis"
+	"github.com/specterops/bloodhound/packages/go/bhlog/attr"
+	"github.com/specterops/bloodhound/packages/go/bhlog/measure"
+	"github.com/specterops/bloodhound/packages/go/cache"
+	"github.com/specterops/bloodhound/packages/go/graphschema"
+	"github.com/specterops/bloodhound/packages/go/graphschema/ad"
+	"github.com/specterops/bloodhound/packages/go/graphschema/azure"
+	"github.com/specterops/bloodhound/packages/go/graphschema/common"
+	"github.com/specterops/dawgs/cypher/analyzer"
+	"github.com/specterops/dawgs/cypher/frontend"
+	"github.com/specterops/dawgs/cypher/models/cypher/format"
+	"github.com/specterops/dawgs/graph"
+	"github.com/specterops/dawgs/ops"
+	"github.com/specterops/dawgs/query"
+	"github.com/specterops/dawgs/util"
 )
 
 type SearchType = string
@@ -62,13 +64,14 @@ const (
 	SearchTypeExact SearchType = "exact"
 	SearchTypeFuzzy SearchType = "fuzzy"
 
-	MaxQueryComplexityWeightAllowed = 50
+	DefaultQueryFitnessLowerBoundSelector = -3
+	DefaultQueryFitnessLowerBoundExplore  = -7
 )
 
 var (
-	ErrUnsupportedDataType  = errors.New("unsupported result type for this query")
-	ErrGraphUnsupported     = errors.New("type 'graph' is not supported for this endpoint")
-	ErrCypherQueryToComplex = errors.New("cypher query is too complex and is likely to result in poor or unstable database performance")
+	ErrUnsupportedDataType   = errors.New("unsupported result type for this query")
+	ErrGraphUnsupported      = errors.New("type 'graph' is not supported for this endpoint")
+	ErrCypherQueryTooComplex = errors.New("cypher query is too complex and is likely to result in poor or unstable database performance")
 )
 
 type EntityQueryParameters struct {
@@ -83,7 +86,7 @@ type EntityQueryParameters struct {
 
 func GetEntityObjectIDFromRequestPath(request *http.Request) (string, error) {
 	if id, hasID := mux.Vars(request)["object_id"]; !hasID {
-		return "", errors.Error("no object ID found in request")
+		return "", errors.New("no object ID found in request")
 	} else {
 		return id, nil
 	}
@@ -131,39 +134,48 @@ func BuildEntityQueryParams(request *http.Request, queryName string, pathDelegat
 
 type Graph interface {
 	GetAssetGroupComboNode(ctx context.Context, owningObjectID string, assetGroupTag string) (map[string]any, error)
-	GetAssetGroupNodes(ctx context.Context, assetGroupTag string) (graph.NodeSet, error)
+	GetAssetGroupNodes(ctx context.Context, assetGroupTag string, isSystemGroup bool) (graph.NodeSet, error)
 	GetAllShortestPaths(ctx context.Context, startNodeID string, endNodeID string, filter graph.Criteria) (graph.PathSet, error)
-	SearchNodesByName(ctx context.Context, nodeKinds graph.Kinds, nameQuery string, skip int, limit int) ([]model.SearchResult, error)
-	SearchByNameOrObjectID(ctx context.Context, searchValue string, searchType string) (graph.NodeSet, error)
+	SearchNodesByNameOrObjectId(ctx context.Context, nodeKinds graph.Kinds, nameOrObjectIdQuery string, openGraphSearchEnabled bool, skip int, limit int, etacAllowedList []string) ([]model.SearchResult, error)
+	SearchByNameOrObjectID(ctx context.Context, includeOpenGraphNodes bool, searchValue string, searchType string) (graph.NodeSet, error)
 	GetADEntityQueryResult(ctx context.Context, params EntityQueryParameters, cacheEnabled bool) (any, int, error)
 	GetEntityByObjectId(ctx context.Context, objectID string, kinds ...graph.Kind) (*graph.Node, error)
 	GetEntityCountResults(ctx context.Context, node *graph.Node, delegates map[string]any) map[string]any
 	GetNodesByKind(ctx context.Context, kinds ...graph.Kind) (graph.NodeSet, error)
-	GetFilteredAndSortedNodes(orderCriteria model.OrderCriteria, filterCriteria graph.Criteria) (graph.NodeSet, error)
+	GetPrimaryNodeKindCounts(ctx context.Context, kind graph.Kind, additionalFilters ...graph.Criteria) (map[string]int, error)
+	CountFilteredNodes(ctx context.Context, filterCriteria graph.Criteria) (int64, error)
+	CountNodesByKind(ctx context.Context, kinds ...graph.Kind) (int64, error)
+	GetFilteredAndSortedNodesPaginated(sortItems query.SortItems, filterCriteria graph.Criteria, offset, limit int) ([]*graph.Node, error)
+	GetFilteredAndSortedNodes(sortItems query.SortItems, filterCriteria graph.Criteria) ([]*graph.Node, error)
 	FetchNodesByObjectIDs(ctx context.Context, objectIDs ...string) (graph.NodeSet, error)
+	FetchNodesByObjectIDsAndKinds(ctx context.Context, kinds graph.Kinds, objectIDs ...string) (graph.NodeSet, error)
 	ValidateOUs(ctx context.Context, ous []string) ([]string, error)
 	BatchNodeUpdate(ctx context.Context, nodeUpdate graph.NodeUpdate) error
-	RawCypherSearch(ctx context.Context, rawCypher string, includeProperties bool) (model.UnifiedGraph, error)
+	RawCypherQuery(ctx context.Context, pQuery PreparedQuery, includeProperties bool) (model.UnifiedGraph, error)
+	PrepareCypherQuery(rawCypher string, queryComplexityLimit int64) (PreparedQuery, error)
 	UpdateSelectorTags(ctx context.Context, db agi.AgiData, selectors model.UpdatedAssetGroupSelectors) error
+	FetchNodeByGraphId(ctx context.Context, id graph.ID) (*graph.Node, error)
 }
 
 type GraphQuery struct {
-	Graph                 graph.Database
-	Cache                 cache.Cache
-	SlowQueryThreshold    int64 // Threshold in milliseconds
-	DisableCypherQC       bool
-	cypherEmitter         cypher.Emitter
-	strippedCypherEmitter cypher.Emitter
+	Graph                        graph.Database
+	Cache                        cache.Cache
+	SlowQueryThreshold           int64 // Threshold in milliseconds
+	DisableCypherComplexityLimit bool
+	EnableCypherMutations        bool
+	cypherEmitter                format.Emitter
+	strippedCypherEmitter        format.Emitter
 }
 
 func NewGraphQuery(graphDB graph.Database, cache cache.Cache, cfg config.Configuration) *GraphQuery {
 	return &GraphQuery{
-		Graph:                 graphDB,
-		Cache:                 cache,
-		SlowQueryThreshold:    cfg.SlowQueryThreshold,
-		DisableCypherQC:       cfg.DisableCypherQC,
-		cypherEmitter:         cypher.NewCypherEmitter(false),
-		strippedCypherEmitter: cypher.NewCypherEmitter(true),
+		Graph:                        graphDB,
+		Cache:                        cache,
+		SlowQueryThreshold:           cfg.SlowQueryThreshold,
+		DisableCypherComplexityLimit: cfg.DisableCypherComplexityLimit,
+		EnableCypherMutations:        cfg.EnableCypherMutations,
+		cypherEmitter:                format.NewCypherEmitter(false),
+		strippedCypherEmitter:        format.NewCypherEmitter(true),
 	}
 }
 
@@ -219,32 +231,24 @@ func (s *GraphQuery) GetAssetGroupComboNode(ctx context.Context, owningObjectID 
 	})
 }
 
-func (s *GraphQuery) GetAssetGroupNodes(ctx context.Context, assetGroupTag string) (graph.NodeSet, error) {
+func (s *GraphQuery) GetAssetGroupNodes(ctx context.Context, assetGroupTag string, isSystemGroup bool) (graph.NodeSet, error) {
 	var (
 		assetGroupNodes graph.NodeSet
 		err             error
 	)
-	return assetGroupNodes, s.Graph.ReadTransaction(ctx, func(tx graph.Transaction) error {
-		if assetGroupNodes, err = ops.FetchNodeSet(tx.Nodes().Filterf(func() graph.Criteria {
-			filters := []graph.Criteria{
-				query.KindIn(query.Node(), azure.Entity, ad.Entity),
-				query.StringContains(query.NodeProperty(common.SystemTags.String()), assetGroupTag),
-			}
 
-			return query.And(filters...)
-		})); err != nil {
+	err = s.Graph.ReadTransaction(ctx, func(tx graph.Transaction) error {
+		if assetGroupNodes, err = agi.FetchAssetGroupNodes(tx, assetGroupTag, isSystemGroup); err != nil {
 			return err
-		} else {
-			for _, node := range assetGroupNodes {
-				node.Properties.Set("type", analysis.GetNodeKindDisplayLabel(node))
-			}
-			return nil
 		}
+		return nil
 	})
+
+	return assetGroupNodes, err
 }
 
 func (s *GraphQuery) GetAllShortestPaths(ctx context.Context, startNodeID string, endNodeID string, filter graph.Criteria) (graph.PathSet, error) {
-	defer log.Measure(log.LevelInfo, "GetAllShortestPaths")()
+	defer measure.ContextMeasure(ctx, slog.LevelInfo, "GetAllShortestPaths")()
 
 	var paths graph.PathSet
 
@@ -285,40 +289,65 @@ var groupFilter = query.Not(
 	),
 )
 
-func SearchNodeByKindAndEqualsNameCriteria(kind graph.Kind, name string) graph.Criteria {
-	return query.And(
-		query.Kind(query.Node(), kind),
-		query.Or(
-			query.Equals(query.NodeProperty(common.Name.String()), name),
-			query.Equals(query.NodeProperty(common.ObjectID.String()), name),
-		),
-		groupFilter,
-	)
+func createNodeSearchGraphCriteria(kind graph.Kind, nameOrObjectId string, includeGroupFilter bool) []graph.Criteria {
+	filters := []graph.Criteria{query.Or(
+		query.Equals(query.NodeProperty(common.Name.String()), nameOrObjectId),
+		query.Equals(query.NodeProperty(common.ObjectID.String()), nameOrObjectId),
+	)}
+	if includeGroupFilter {
+		filters = append(filters, groupFilter)
+	}
+	if kind != nil {
+		filters = append(filters, query.Kind(query.Node(), kind))
+	}
+	return filters
+
 }
 
-func searchNodeByKindAndContainsName(kind graph.Kind, name string) graph.Criteria {
-	return query.And(
-		query.Kind(query.Node(), kind),
-		query.Or(
-			query.StringContains(query.NodeProperty(common.Name.String()), name),
-			query.StringContains(query.NodeProperty(common.ObjectID.String()), name),
-		),
-		query.Not(query.Equals(query.NodeProperty(common.Name.String()), name)),
-		query.Not(query.Equals(query.NodeProperty(common.ObjectID.String()), name)),
-		groupFilter,
-	)
+func createFuzzyNodeSearchGraphCriteria(kind graph.Kind, nameOrObjectId string, includeGroupFilter bool) []graph.Criteria {
+	filters := []graph.Criteria{query.Or(
+		query.StringContains(query.NodeProperty(common.Name.String()), nameOrObjectId),
+		query.StringContains(query.NodeProperty(common.ObjectID.String()), nameOrObjectId),
+	),
+		query.Not(query.Equals(query.NodeProperty(common.Name.String()), nameOrObjectId)),
+		query.Not(query.Equals(query.NodeProperty(common.ObjectID.String()), nameOrObjectId)),
+	}
+
+	if includeGroupFilter {
+		filters = append(filters, groupFilter)
+	}
+
+	if kind != nil {
+		filters = append(filters, query.Kind(query.Node(), kind))
+	}
+	return filters
 }
 
-func formatSearchResults(exactResults []model.SearchResult, fuzzyResults []model.SearchResult, limit, skip int) []model.SearchResult {
+func createNodeStartsWithSearchGraphCriteria(kind graph.Kind, nameOrObjectId string) []graph.Criteria {
+	filters := []graph.Criteria{query.Or(
+		query.StringStartsWith(query.NodeProperty(common.Name.String()), nameOrObjectId),
+		query.StringStartsWith(query.NodeProperty(common.ObjectID.String()), nameOrObjectId),
+	),
+		query.Not(query.Equals(query.NodeProperty(common.Name.String()), nameOrObjectId)),
+		query.Not(query.Equals(query.NodeProperty(common.ObjectID.String()), nameOrObjectId)),
+	}
+
+	if kind != nil {
+		filters = append(filters, query.Kind(query.Node(), kind))
+	}
+	return filters
+}
+
+func formatSearchResults(results NodeSearchResults, limit, skip int) []model.SearchResult {
 	// Sort fuzzy results since they are all inexact matches based on the name passed in
-	sort.Slice(fuzzyResults, func(i, j int) bool {
-		return fuzzyResults[i].Name < fuzzyResults[j].Name
+	sort.Slice(results.FuzzyResults, func(i, j int) bool {
+		return results.FuzzyResults[i].Name < results.FuzzyResults[j].Name
 	})
 
-	searchResults := make([]model.SearchResult, len(exactResults)+len(fuzzyResults))
+	searchResults := make([]model.SearchResult, len(results.ExactResults)+len(results.FuzzyResults))
 
-	copy(searchResults, exactResults)
-	copy(searchResults[len(exactResults):], fuzzyResults)
+	copy(searchResults, results.ExactResults)
+	copy(searchResults[len(results.ExactResults):], results.FuzzyResults)
 
 	length := len(searchResults)
 
@@ -334,199 +363,306 @@ func formatSearchResults(exactResults []model.SearchResult, fuzzyResults []model
 	return searchResults[skip:end]
 }
 
-func (s *GraphQuery) SearchNodesByName(ctx context.Context, nodeKinds graph.Kinds, name string, skip int, limit int) ([]model.SearchResult, error) {
+type NodeSearchResults struct {
+	ExactResults []model.SearchResult
+	FuzzyResults []model.SearchResult
+}
+
+func (s *GraphQuery) SearchNodesByNameOrObjectId(ctx context.Context, nodeKinds graph.Kinds, nameOrObjectId string, openGraphSearchEnabled bool, skip int, limit int, environmentsFilter []string) ([]model.SearchResult, error) {
 	var (
-		exactResults  []model.SearchResult
-		fuzzyResults  []model.SearchResult
-		formattedName = strings.ToUpper(name)
+		results        = NodeSearchResults{}
+		formattedQuery = strings.ToUpper(nameOrObjectId)
+		err            error
 	)
 
-	for _, kind := range nodeKinds {
-		if err := s.Graph.ReadTransaction(ctx, func(tx graph.Transaction) error {
-			if exactMatchNodes, err := ops.FetchNodes(tx.Nodes().Filter(SearchNodeByKindAndEqualsNameCriteria(kind, formattedName))); err != nil {
-				return err
-
-			} else {
-				exactResults = append(exactResults, nodesToSearchResult(exactMatchNodes...)...)
+	if len(nodeKinds) != 0 {
+		for _, kind := range nodeKinds {
+			results, err = s.searchExactAndFuzzyMatchedNodes(ctx, kind, formattedQuery, openGraphSearchEnabled, results, environmentsFilter)
+			if err != nil {
+				return []model.SearchResult{}, err
 			}
-
-			if fuzzyMatchNodes, err := ops.FetchNodes(tx.Nodes().Filter(searchNodeByKindAndContainsName(kind, formattedName))); err != nil {
-				return err
-			} else {
-				fuzzyResults = append(fuzzyResults, nodesToSearchResult(fuzzyMatchNodes...)...)
-			}
-
-			return nil
-		}); err != nil {
+		}
+	} else {
+		results, err = s.searchExactAndFuzzyMatchedNodes(ctx, nil, formattedQuery, openGraphSearchEnabled, results, environmentsFilter)
+		if err != nil {
 			return []model.SearchResult{}, err
 		}
 	}
 
-	return formatSearchResults(exactResults, fuzzyResults, limit, skip), nil
+	return formatSearchResults(results, limit, skip), nil
 }
 
-type preparedQuery struct {
+func (s *GraphQuery) searchExactAndFuzzyMatchedNodes(ctx context.Context, kind graph.Kind, formattedQuery string, openGraphSearchEnabled bool, results NodeSearchResults, environmentsFilter []string) (NodeSearchResults, error) {
+	if err := s.Graph.ReadTransaction(ctx, func(tx graph.Transaction) error {
+		if exactMatchNodes, err := ops.FetchNodes(tx.Nodes().Filter(query.And(createNodeSearchGraphCriteria(kind, formattedQuery, true)...))); err != nil {
+			return err
+		} else if searchResults, err := filterNodesToSearchResult(openGraphSearchEnabled, environmentsFilter, exactMatchNodes...); err != nil {
+			return err
+		} else {
+			results.ExactResults = append(results.ExactResults, searchResults...)
+		}
+		if fuzzyMatchNodes, err := ops.FetchNodes(tx.Nodes().Filter(query.And(createFuzzyNodeSearchGraphCriteria(kind, formattedQuery, true)...))); err != nil {
+			return err
+		} else if searchResults, err := filterNodesToSearchResult(openGraphSearchEnabled, environmentsFilter, fuzzyMatchNodes...); err != nil {
+			return err
+		} else {
+			results.FuzzyResults = append(results.FuzzyResults, searchResults...)
+		}
+		return nil
+	}); err != nil {
+		return NodeSearchResults{}, err
+	}
+	return results, nil
+}
+
+type PreparedQuery struct {
 	query         string
-	strippedQuery string
-	complexity    *analyzer.ComplexityMeasure
+	StrippedQuery string
+	complexity    analyzer.ComplexityMeasure
+	HasMutation   bool
 }
 
-func (s *GraphQuery) prepareGraphQuery(rawCypher string, disableCypherQC bool) (preparedQuery, error) {
+func (s *GraphQuery) PrepareCypherQuery(rawCypher string, queryComplexityLimit int64) (PreparedQuery, error) {
 	var (
-		parseCtx   = frontend.DefaultCypherContext()
-		buffer     = &bytes.Buffer{}
-		graphQuery preparedQuery
+		cypherFilters = []frontend.Visitor{
+			&frontend.ExplicitProcedureInvocationFilter{},
+			&frontend.ImplicitProcedureInvocationFilter{},
+			&frontend.SpecifiedParametersFilter{},
+		}
+		queryBuffer         = &bytes.Buffer{}
+		strippedQueryBuffer = &bytes.Buffer{}
+		graphQuery          PreparedQuery
 	)
 
-	if queryModel, err := frontend.ParseCypher(parseCtx, rawCypher); err != nil {
-		return graphQuery, newQueryError(err)
-	} else if complexityMeasure, err := analyzer.QueryComplexity(queryModel); err != nil {
-		return graphQuery, newQueryError(err)
-	} else if !disableCypherQC && complexityMeasure.Weight > MaxQueryComplexityWeightAllowed {
-		return graphQuery, newQueryError(ErrCypherQueryToComplex)
-	} else if pgDB, isPG := s.Graph.(*pg.Driver); isPG {
-		if _, err := pgsql.Translate(queryModel, pgDB.KindMapper()); err != nil {
-			return graphQuery, newQueryError(err)
-		}
-
-		if err := pgsql.NewEmitter(false, pgDB.KindMapper()).Write(queryModel, buffer); err != nil {
-			return graphQuery, err
-		} else {
-			graphQuery.query = buffer.String()
-		}
-
-		return graphQuery, nil
+	// If cypher mutations are disabled, we want to add the updating clause filter to properly error as unsupported query
+	// If we are mutating, make sure our expansions aren't included in any sort of update
+	if !s.EnableCypherMutations {
+		cypherFilters = append(cypherFilters, &frontend.UpdatingNotAllowedClauseFilter{})
 	} else {
-		graphQuery.complexity = complexityMeasure
+		cypherFilters = append(cypherFilters, &frontend.UpdatingClauseFilter{})
+	}
 
-		if err := s.cypherEmitter.Write(queryModel, buffer); err != nil {
-			return graphQuery, newQueryError(err)
-		} else {
-			graphQuery.query = buffer.String()
-		}
+	parseCtx := frontend.NewContext(cypherFilters...)
 
-		buffer.Reset()
+	queryModel, err := frontend.ParseCypher(parseCtx, rawCypher)
+	if err != nil {
+		return graphQuery, err
+	}
 
-		if err := s.strippedCypherEmitter.Write(queryModel, buffer); err != nil {
-			return graphQuery, newQueryError(err)
-		} else {
-			graphQuery.strippedQuery = buffer.String()
-		}
+	// Query rewriter targets certain AST elements like relationship types and may rewrite them to add additional
+	// functionality after parsing
+	queryRewriter := NewRewriter()
+
+	if err = walk.Cypher(queryModel, queryRewriter); err != nil {
+		return graphQuery, err
+	} else if queryRewriter.HasMutation && queryRewriter.HasRelationshipTypeShortcut {
+		return graphQuery, fmt.Errorf("relationship type shortcuts are not supported in graph mutations")
+	}
+
+	graphQuery.HasMutation = queryRewriter.HasMutation
+
+	complexityMeasure, err := analyzer.QueryComplexity(queryModel)
+	if err != nil {
+		return graphQuery, err
+	} else if err = s.strippedCypherEmitter.Write(queryModel, strippedQueryBuffer); err != nil {
+		return graphQuery, err
+	} else if !s.DisableCypherComplexityLimit && complexityMeasure.RelativeFitness <= queryComplexityLimit {
+		// log query details if it is rejected due to poor fitness
+		slog.Error(
+			"Query rejected because it exceeded the complexity limit",
+			slog.Int64("fitness", complexityMeasure.RelativeFitness),
+			slog.Int64("complexity_limit", queryComplexityLimit),
+			slog.String("query", strippedQueryBuffer.String()),
+		)
+
+		return graphQuery, ErrCypherQueryTooComplex
+	}
+
+	graphQuery.StrippedQuery = strippedQueryBuffer.String()
+	graphQuery.complexity = complexityMeasure
+
+	if err = s.cypherEmitter.Write(queryModel, queryBuffer); err != nil {
+		return graphQuery, err
+	} else {
+		graphQuery.query = queryBuffer.String()
 	}
 
 	return graphQuery, nil
 }
 
-func (s *GraphQuery) RawCypherSearch(ctx context.Context, rawCypher string, includeProperties bool) (model.UnifiedGraph, error) {
+// RawCypherQuery executes the given PreparedQuery and returns a model.UnifiedGraph or any error encountered during
+// query execution.
+func (s *GraphQuery) RawCypherQuery(ctx context.Context, pQuery PreparedQuery, includeProperties bool) (model.UnifiedGraph, error) {
 	var (
+		err error
+
 		graphResponse = model.NewUnifiedGraph()
-		bhCtxInst     = bhCtx.Get(ctx)
-	)
+		start         = time.Now()
 
-	if preparedQuery, err := s.prepareGraphQuery(rawCypher, s.DisableCypherQC); err != nil {
-		return graphResponse, err
-	} else {
-		logEvent := log.WithLevel(log.LevelInfo)
-		logEvent.Str("query", preparedQuery.strippedQuery)
-		logEvent.Msg("Executing user cypher query")
-
-		return graphResponse, s.Graph.ReadTransaction(ctx, func(tx graph.Transaction) error {
-			if pathSet, err := ops.FetchPathSetByQuery(tx, preparedQuery.query); err != nil {
+		txDelegate = func(tx graph.Transaction) error {
+			if pathSet, err := ops.FetchPathSetByQuery(tx, pQuery.query); err != nil {
 				return err
 			} else {
 				graphResponse.AddPathSet(pathSet, includeProperties)
 			}
 
 			return nil
-		}, func(config *graph.TransactionConfig) {
-			// The upperbound for this query must be either the custom request timeout, or if it isn't
-			// supplied then 30 minutes- since that's a reasonable duration at which to deem the transaction
-			// as having been stuck in a deadlock or other error
-			availableRuntime := bhCtxInst.Timeout
-			if availableRuntime > 0 {
-				log.Debugf("Available timeout for query is set to: %.2f seconds", availableRuntime.Seconds())
-			} else {
-				availableRuntime = time.Minute * 30
+		}
+	)
 
-				if !s.DisableCypherQC {
-					// The weight of the query is divided by 5 to get a runtime reduction factor. This means that query weights
-					// of 5 or less will get the full runtime duration.
-					if reductionFactor := time.Duration(preparedQuery.complexity.Weight) / 5; reductionFactor > 0 {
-						availableRuntime /= reductionFactor
+	slog.InfoContext(
+		ctx,
+		"Preparing user cypher query",
+		slog.String("query", pQuery.StrippedQuery),
+		slog.Int64("fitness", pQuery.complexity.RelativeFitness),
+	)
 
-						log.Infof("Cypher query cost is: %.2f. Reduction factor for query is: %d. Available timeout for query is now set to: %.2f minutes", preparedQuery.complexity.Weight, reductionFactor, availableRuntime.Minutes())
-					}
-				}
-			}
-
-			// Set the timeout for this DB interaction
-			config.Timeout = availableRuntime
-		})
+	if pQuery.HasMutation {
+		// If the mutation is complex it is still worth spinning it into a write transaction in case it fails,
+		// deadlocks or otherwise rolls back
+		err = s.Graph.WriteTransaction(ctx, txDelegate)
+	} else {
+		err = s.Graph.ReadTransaction(ctx, txDelegate)
 	}
+
+	slog.InfoContext(
+		ctx,
+		"Executed user cypher query",
+		slog.String("query", pQuery.StrippedQuery),
+		slog.Int64("fitness", pQuery.complexity.RelativeFitness),
+		slog.Duration("elapsed", time.Since(start)),
+	)
+
+	if err != nil {
+		// Log query details if neo4j times out
+		if util.IsNeoTimeoutError(err) {
+			slog.ErrorContext(
+				ctx,
+				"Neo4j timed out while executing cypher query",
+				slog.String("query", pQuery.StrippedQuery),
+				slog.Int64("fitness", pQuery.complexity.RelativeFitness),
+			)
+		} else {
+			slog.WarnContext(ctx, "RawCypherQuery failed", attr.Error(err))
+		}
+	}
+
+	return graphResponse, err
 }
 
-func nodeToSearchResult(node *graph.Node) model.SearchResult {
+func applyTimeoutReduction(queryWeight int64, availableRuntime time.Duration) (time.Duration, int64) {
+	// The weight of the query is divided by 5 to get a runtime reduction factor, in a way that:
+	// weights of 4 or less get the full runtime duration
+	// weights of 5-9 will get 1/2 the runtime duration
+	// weights of 10-15 will get 1/3 the runtime duration
+	// and so on until the max weight of 50 gets 1/11 the runtime duration
+	reductionFactor := 1 + (queryWeight / 5)
+
+	availableRuntimeInt := int64(availableRuntime.Seconds())
+	// reductionFactor will be the math.Floor() of the result of the division below
+	availableRuntimeInt /= reductionFactor
+	availableRuntime = time.Duration(availableRuntimeInt) * time.Second
+
+	return availableRuntime, reductionFactor
+}
+
+func nodeToSearchResult(openGraphSearchEnabled bool, node *graph.Node) model.SearchResult {
 	var (
-		name, _              = node.Properties.GetOrDefault(common.Name.String(), "NO NAME").String()
-		objectID, _          = node.Properties.GetOrDefault(common.ObjectID.String(), "NO OBJECT ID").String()
+		name, _              = node.Properties.GetWithFallback(common.Name.String(), graphschema.DefaultMissingName, common.DisplayName.String(), common.ObjectID.String()).String()
+		objectID, _          = node.Properties.GetOrDefault(common.ObjectID.String(), graphschema.DefaultMissingObjectId).String()
 		distinguishedName, _ = node.Properties.GetOrDefault(ad.DistinguishedName.String(), "").String()
 		systemTags, _        = node.Properties.GetOrDefault(common.SystemTags.String(), "").String()
+		nodeKindDisplayLabel = analysis.GetNodeKindDisplayLabel(node)
 	)
+
+	if openGraphSearchEnabled && nodeKindDisplayLabel == analysis.NodeKindUnknown {
+		if len(node.Kinds) > 0 {
+			nodeKindDisplayLabel = node.Kinds[0].String()
+		}
+	}
 
 	return model.SearchResult{
 		ObjectID:          objectID,
-		Type:              analysis.GetNodeKindDisplayLabel(node),
+		Type:              nodeKindDisplayLabel,
 		Name:              name,
 		DistinguishedName: distinguishedName,
 		SystemTags:        systemTags,
 	}
 }
 
-func nodesToSearchResult(nodes ...*graph.Node) []model.SearchResult {
-	searchResults := make([]model.SearchResult, len(nodes))
+// filterNodesToSearchResult filters nodes by environmentsFilter and converts them to model.SearchResult.
+// When environmentsFilter is non-nil, only nodes whose tenant ID (Azure) or domain SID (AD) appears
+// in environmentsFilter are included. When environmentsFilter is nil, all nodes are converted without filtering.
+// Returns an error when unable to retrieve the tenant ID or domain SID property.
+func filterNodesToSearchResult(openGraphSearchEnabled bool, environmentsFilter []string, nodes ...*graph.Node) ([]model.SearchResult, error) {
+	searchResults := []model.SearchResult{}
 
-	for idx, node := range nodes {
-		searchResults[idx] = nodeToSearchResult(node)
+	for _, node := range nodes {
+		nodeId := ""
+
+		if environmentsFilter != nil {
+			// Retrieve Domain SID or Azure Tenant ID and check if it exists in environmentsFilter
+			if tenantID := node.Kinds.ContainsOneOf(azure.Entity); tenantID {
+				if id, err := node.Properties.Get(azure.TenantID.String()).String(); err != nil {
+					return nil, fmt.Errorf("error getting tenantid: %w", err)
+				} else {
+					nodeId = id
+				}
+			} else if domainSID := node.Kinds.ContainsOneOf(ad.Entity); domainSID {
+				if id, err := node.Properties.Get(ad.DomainSID.String()).String(); err != nil {
+					return nil, fmt.Errorf("error getting domainsid: %w", err)
+				} else {
+					nodeId = id
+				}
+			}
+			if slices.Contains(environmentsFilter, nodeId) {
+				searchResults = append(searchResults, nodeToSearchResult(openGraphSearchEnabled, node))
+			}
+		} else {
+			searchResults = append(searchResults, nodeToSearchResult(openGraphSearchEnabled, node))
+		}
+
 	}
 
-	return searchResults
+	return searchResults, nil
 }
 
-func (s *GraphQuery) SearchByNameOrObjectID(ctx context.Context, searchValue string, searchType SearchType) (graph.NodeSet, error) {
-	var nodes = graph.NewNodeSet()
-
-	for _, kind := range []graph.Kind{ad.Entity, azure.Entity} {
-		if err := s.Graph.ReadTransaction(ctx, func(tx graph.Transaction) error {
-			if fetchedNodes, err := ops.FetchNodeSet(tx.Nodes().Filterf(func() graph.Criteria {
-				if searchType == SearchTypeExact {
-					return query.And(
-						query.Kind(query.Node(), kind),
-						query.Or(
-							query.Equals(query.NodeProperty(common.Name.String()), strings.ToUpper(searchValue)),
-							query.Equals(query.NodeProperty(common.ObjectID.String()), strings.ToUpper(searchValue)),
-						),
-					)
-				} else {
-					return query.And(
-						query.Kind(query.Node(), kind),
-						query.Or(
-							query.StringStartsWith(query.NodeProperty(common.Name.String()), strings.ToUpper(searchValue)),
-							query.StringStartsWith(query.NodeProperty(common.ObjectID.String()), strings.ToUpper(searchValue)),
-						),
-					)
-				}
-			})); err != nil {
-				return err
+func (s *GraphQuery) searchExactOrFuzzyMatchedNodes(ctx context.Context, kind graph.Kind, searchValue string, searchType SearchType, nodes graph.NodeSet) (graph.NodeSet, error) {
+	if err := s.Graph.ReadTransaction(ctx, func(tx graph.Transaction) error {
+		if fetchedNodes, err := ops.FetchNodeSet(tx.Nodes().Filterf(func() graph.Criteria {
+			if searchType == SearchTypeExact {
+				return query.And(createNodeSearchGraphCriteria(kind, strings.ToUpper(searchValue), false)...)
 			} else {
-				nodes.AddSet(fetchedNodes)
-				return nil
+				return query.And(createNodeStartsWithSearchGraphCriteria(kind, strings.ToUpper(searchValue))...)
 			}
-		}); err != nil {
-			return nil, err
+		})); err != nil {
+			return err
+		} else {
+			nodes.AddSet(fetchedNodes)
+			return nil
 		}
+	}); err != nil {
+		return nil, err
 	}
-
 	return nodes, nil
+}
+
+func (s *GraphQuery) SearchByNameOrObjectID(ctx context.Context, includeOpenGraphNodes bool, searchValue string, searchType SearchType) (graph.NodeSet, error) {
+	var (
+		nodes = graph.NewNodeSet()
+		err   error
+	)
+	if includeOpenGraphNodes {
+		return s.searchExactOrFuzzyMatchedNodes(ctx, nil, searchValue, searchType, nodes)
+
+	} else {
+		for _, kind := range []graph.Kind{ad.Entity, azure.Entity} {
+			if nodes, err = s.searchExactOrFuzzyMatchedNodes(ctx, kind, searchValue, searchType, nodes); err != nil {
+				return nil, err
+			}
+		}
+		return nodes, nil
+	}
 }
 
 func (s *GraphQuery) GetADEntityQueryResult(ctx context.Context, params EntityQueryParameters, cacheEnabled bool) (any, int, error) {
@@ -578,13 +714,15 @@ func (s *GraphQuery) GetEntityCountResults(ctx context.Context, node *graph.Node
 	for delegateKey, delegate := range delegates {
 		waitGroup.Add(1)
 
-		log.Infof("Running entity query %s", delegateKey)
+		slog.DebugContext(ctx, "Running entity count query", slog.String("entity_key", delegateKey))
 
 		go func(delegateKey string, delegate any) {
 			defer waitGroup.Done()
 
-			if result, err := runEntityQuery(ctx, s.Graph, delegate, node, 0, 0); err != nil {
-				log.Errorf("error running entity query for key %s: %v", delegateKey, err)
+			if result, err := runEntityQuery(ctx, s.Graph, delegate, node, 0, 0); errors.Is(err, graph.ErrContextTimedOut) {
+				slog.WarnContext(ctx, fmt.Sprintf("Running entity query for key %s: %v", delegateKey, err))
+			} else if err != nil {
+				slog.ErrorContext(ctx, fmt.Sprintf("Error running entity query for key %s: %v", delegateKey, err))
 				data.Store(delegateKey, 0)
 			} else {
 				data.Store(delegateKey, result.Len())
@@ -600,7 +738,60 @@ func (s *GraphQuery) GetEntityCountResults(ctx context.Context, node *graph.Node
 	})
 
 	results["props"] = node.Properties.Map
+	results["kinds"] = node.Kinds.Strings()
 	return results
+}
+
+func (s *GraphQuery) CountFilteredNodes(ctx context.Context, filterCriteria graph.Criteria) (int64, error) {
+	var numNodes int64
+
+	return numNodes, s.Graph.ReadTransaction(ctx, func(tx graph.Transaction) error {
+		var err error
+		numNodes, err = tx.Nodes().Filter(filterCriteria).Count()
+		return err
+	})
+}
+
+func (s *GraphQuery) CountNodesByKind(ctx context.Context, kinds ...graph.Kind) (int64, error) {
+	return s.CountFilteredNodes(ctx, (query.KindIn(query.Node(), kinds...)))
+}
+
+func (s *GraphQuery) FetchNodeByGraphId(ctx context.Context, id graph.ID) (*graph.Node, error) {
+	var node *graph.Node
+
+	if err := s.Graph.ReadTransaction(ctx, func(tx graph.Transaction) error {
+		var err error
+		node, err = ops.FetchNode(tx, id)
+		return err
+	}); err != nil {
+		return nil, err
+	} else if node == nil {
+		return nil, fmt.Errorf("node not found for id: %s", id)
+	} else {
+		return node, err
+	}
+}
+
+func (s *GraphQuery) GetPrimaryNodeKindCounts(ctx context.Context, kind graph.Kind, additionalFilters ...graph.Criteria) (map[string]int, error) {
+	var (
+		results = map[string]int{}
+		filters = []graph.Criteria{query.KindIn(query.Node(), kind)}
+	)
+
+	if additionalFilters != nil {
+		filters = append(filters, additionalFilters...)
+	}
+
+	return results, s.Graph.ReadTransaction(ctx, func(tx graph.Transaction) error {
+		return tx.Nodes().Filter(query.And(filters...)).FetchKinds(func(cursor graph.Cursor[graph.KindsResult]) error {
+			for next := range cursor.Chan() {
+				primaryKindStr := graphschema.PrimaryNodeKind(next.Kinds).String()
+				results[primaryKindStr] += 1
+			}
+
+			return cursor.Error()
+		})
+	})
 }
 
 func (s *GraphQuery) GetNodesByKind(ctx context.Context, kinds ...graph.Kind) (graph.NodeSet, error) {
@@ -618,31 +809,40 @@ func (s *GraphQuery) GetNodesByKind(ctx context.Context, kinds ...graph.Kind) (g
 	})
 }
 
-func (s *GraphQuery) GetFilteredAndSortedNodes(orderCriteria model.OrderCriteria, filterCriteria graph.Criteria) (graph.NodeSet, error) {
-	var nodes graph.NodeSet
+func (s *GraphQuery) GetFilteredAndSortedNodes(sortItems query.SortItems, filterCriteria graph.Criteria) ([]*graph.Node, error) {
+	return s.GetFilteredAndSortedNodesPaginated(sortItems, filterCriteria, 0, 0)
+}
 
-	if err := s.Graph.ReadTransaction(context.Background(), func(tx graph.Transaction) error {
+func (s *GraphQuery) GetFilteredAndSortedNodesPaginated(sortItems query.SortItems, filterCriteria graph.Criteria, offset, limit int) ([]*graph.Node, error) {
+	var (
+		nodes         []*graph.Node
+		finalCriteria []graph.Criteria
+	)
+
+	return nodes, s.Graph.ReadTransaction(context.Background(), func(tx graph.Transaction) error {
 		nodeQuery := tx.Nodes().Filterf(func() graph.Criteria {
 			return filterCriteria
 		})
 
-		if len(orderCriteria) > 0 {
-			for _, order := range orderCriteria {
-				nodeQuery = nodeQuery.OrderBy(query.Order(query.NodeProperty(order.Property), order.Order))
+		if offset > 0 {
+			finalCriteria = append(finalCriteria, query.Offset(offset))
+		}
+
+		if limit > 0 {
+			finalCriteria = append(finalCriteria, query.Limit(limit))
+		}
+
+		if len(sortItems) > 0 {
+			finalCriteria = append(finalCriteria, sortItems.FormatCypherOrder())
+		}
+
+		return nodeQuery.Fetch(func(cursor graph.Cursor[*graph.Node]) error {
+			for node := range cursor.Chan() {
+				nodes = append(nodes, node)
 			}
-		}
-
-		if fetchedNodes, err := ops.FetchNodeSet(nodeQuery); err != nil {
-			return err
-		} else {
-			nodes = fetchedNodes
-		}
-
-		return nil
-	}); err != nil {
-		return graph.NodeSet{}, err
-	}
-	return nodes, nil
+			return nil
+		}, finalCriteria...)
+	})
 }
 
 // FetchNodesByObjectIDs takes a list of objectIDs. Returns a graph.NodeSet for found results
@@ -655,6 +855,26 @@ func (s *GraphQuery) FetchNodesByObjectIDs(ctx context.Context, objectIDs ...str
 			func() graph.Criteria {
 				return query.And(
 					query.KindIn(query.Node(), ad.Entity, azure.Entity),
+					query.In(query.NodeProperty(common.ObjectID.String()), objectIDs),
+				)
+			}),
+		); err != nil {
+			return err
+		} else {
+			nodes = fetchedNodes
+			return nil
+		}
+	})
+}
+
+func (s *GraphQuery) FetchNodesByObjectIDsAndKinds(ctx context.Context, kinds graph.Kinds, objectIDs ...string) (graph.NodeSet, error) {
+	var nodes graph.NodeSet
+
+	return nodes, s.Graph.ReadTransaction(ctx, func(tx graph.Transaction) error {
+		if fetchedNodes, err := ops.FetchNodeSet(tx.Nodes().Filterf(
+			func() graph.Criteria {
+				return query.And(
+					query.KindIn(query.Node(), kinds...),
 					query.In(query.NodeProperty(common.ObjectID.String()), objectIDs),
 				)
 			}),
@@ -694,7 +914,7 @@ func (s *GraphQuery) ValidateOUs(ctx context.Context, ous []string) ([]string, e
 			return nil
 		}); err != nil {
 			if graph.IsErrNotFound(err) {
-				return nil, errors.New(fmt.Sprintf("no record found for %s", ou))
+				return nil, fmt.Errorf("no record found for %s", ou)
 			} else {
 				return nil, err
 			}
@@ -732,11 +952,11 @@ func (s *GraphQuery) cacheQueryResult(queryStart time.Time, cacheKey string, res
 		// Using GuardedSet here even though it isn't necessary because it allows us to collect information on how often
 		// we run these queries in parallel
 		if set, sizeInBytes, err := s.Cache.GuardedSet(cacheKey, result); err != nil {
-			log.Errorf("[Entity Results Cache] Failed to write results to cache for key: %s", cacheKey)
+			slog.Error(fmt.Sprintf("[Entity Results Cache] Failed to write results to cache for key: %s", cacheKey))
 		} else if !set {
-			log.Warnf("[Entity Results Cache] Cache entry for query %s not set because it already exists", cacheKey)
+			slog.Warn(fmt.Sprintf("[Entity Results Cache] Cache entry for query %s not set because it already exists", cacheKey))
 		} else {
-			log.Infof("[Entity Results Cache] Cached slow query %s (%d bytes) because it took %dms", cacheKey, sizeInBytes, queryTime)
+			slog.Info(fmt.Sprintf("[Entity Results Cache] Cached slow query %s (%d bytes) because it took %dms", cacheKey, sizeInBytes, queryTime))
 		}
 	}
 }
@@ -814,7 +1034,7 @@ func (s *GraphQuery) runListQuery(ctx context.Context, node *graph.Node, params 
 	if result, err := s.runMaybeCachedEntityQuery(ctx, node, params, cacheEnabled); err != nil {
 		return nil, 0, err
 	} else if skip > result.Len() {
-		return nil, 0, errors.New(fmt.Sprintf(utils.ErrorInvalidSkip, skip))
+		return nil, 0, fmt.Errorf(utils.ErrorInvalidSkip, skip)
 	} else {
 		if skip+limit > result.Len() {
 			limit = result.Len() - skip
@@ -883,20 +1103,45 @@ func fromGraphNodes(nodes graph.NodeSet) []model.PagedNodeListEntry {
 		)
 
 		if objectId, err := props.Get(common.ObjectID.String()).String(); err != nil {
-			log.Errorf("Error getting objectid for %d: %v", node.ID, err)
+			if errors.Is(err, graph.ErrPropertyNotFound) {
+				slog.Warn(
+					"Node missing objectid",
+					slog.Int("node_id", int(node.ID)),
+					attr.Error(err),
+				)
+			} else {
+				slog.Error(
+					"Error getting node objectid",
+					slog.Int("node_id", int(node.ID)),
+					attr.Error(err),
+				)
+			}
 			nodeEntry.ObjectID = ""
 		} else {
 			nodeEntry.ObjectID = objectId
 		}
 
 		if name, err := props.Get(common.Name.String()).String(); err != nil {
-			log.Errorf("Error getting name for %d: %v", node.ID, err)
+			if errors.Is(err, graph.ErrPropertyNotFound) {
+				slog.Warn(
+					"Node missing name",
+					slog.Int("node_id", int(node.ID)),
+					attr.Error(err),
+				)
+			} else {
+				slog.Error(
+					"Error getting node name",
+					slog.Int("node_id", int(node.ID)),
+					attr.Error(err),
+				)
+			}
 			nodeEntry.Name = ""
 		} else {
 			nodeEntry.Name = name
 		}
 
 		nodeEntry.Label = analysis.GetNodeKindDisplayLabel(node)
+		nodeEntry.Kinds = node.Kinds.Strings()
 
 		renderedNodes = append(renderedNodes, nodeEntry)
 	}

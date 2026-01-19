@@ -17,18 +17,15 @@
 package js
 
 import (
-	"bytes"
+	"context"
 	"encoding/json"
 	"errors"
 	"fmt"
-	"os/exec"
+	"log/slog"
 
-	"github.com/specterops/bloodhound/log"
 	"github.com/specterops/bloodhound/packages/go/stbernard/analyzers/codeclimate"
-)
-
-var (
-	ErrNonZeroExit = errors.New("non-zero exit status")
+	"github.com/specterops/bloodhound/packages/go/stbernard/cmdrunner"
+	"github.com/specterops/bloodhound/packages/go/stbernard/environment"
 )
 
 type esLintEntry struct {
@@ -46,63 +43,65 @@ type esLintMessage struct {
 	Line     uint64 `json:"line"`
 }
 
-func Run(jsPaths []string, env []string) ([]codeclimate.Entry, error) {
-	var (
-		exitError error = nil
-		result          = make([]codeclimate.Entry, 0, len(jsPaths))
-	)
+// Run eslint for all passed jsPaths and returns a slice of CodeClimate-like entries
+func Run(jsPaths []string, env environment.Environment) (codeclimate.SeverityMap, error) {
+	result := make([]codeclimate.Entry, 0, len(jsPaths))
 
-	log.Infof("Running eslint")
+	slog.Info("Running eslint")
 
 	for _, path := range jsPaths {
-		entries, err := runEslint(path, env)
-		if errors.Is(err, ErrNonZeroExit) {
-			exitError = ErrNonZeroExit
-		} else if err != nil {
-			return result, fmt.Errorf("failed to run eslint at %v: %w", path, err)
+		if entries, err := runEslint(path, env); err != nil {
+			return nil, fmt.Errorf("running eslint at %v: %w", path, err)
+		} else {
+			result = append(result, entries...)
 		}
-		result = append(result, entries...)
 	}
 
-	log.Infof("Completed eslint")
+	slog.Info("Completed eslint")
 
-	return result, exitError
+	return codeclimate.NewSeverityMap(result), nil
 }
 
-func runEslint(cwd string, env []string) ([]codeclimate.Entry, error) {
+// runEslint runs the actual yarn command and processes the raw output to a slice of CodeClimate-like entries
+func runEslint(path string, env environment.Environment) ([]codeclimate.Entry, error) {
 	var (
-		result    []codeclimate.Entry
-		rawResult []esLintEntry
-		outb      bytes.Buffer
+		lintEntries   []codeclimate.Entry
+		esLintEntries []esLintEntry
+
+		command = env[environment.YarnCmdVarName]
+		args    = []string{"run", "lint", "--format", "json"}
 	)
 
-	cmd := exec.Command("yarn", "run", "lint", "--format", "json")
-	cmd.Env = env
-	cmd.Dir = cwd
-	cmd.Stdout = &outb
-
-	err := cmd.Run()
-	if _, ok := err.(*exec.ExitError); ok {
-		err = ErrNonZeroExit
-	} else if err != nil {
-		return result, fmt.Errorf("unexpected failure: %w", err)
+	executionPlan := cmdrunner.ExecutionPlan{
+		Command:        command,
+		Args:           args,
+		Path:           path,
+		Env:            env.Slice(),
+		SuppressErrors: true,
 	}
 
-	if err := json.NewDecoder(&outb).Decode(&rawResult); err != nil {
-		return result, fmt.Errorf("failed to decode output: %w", err)
+	result, err := cmdrunner.Run(context.TODO(), executionPlan)
+	if err != nil && !errors.Is(err, cmdrunner.ErrCmdExecutionFailed) {
+		return lintEntries, fmt.Errorf("yarn run lint: %w", err)
 	}
 
-	for _, entry := range rawResult {
+	if err := json.NewDecoder(result.StandardOutput).Decode(&esLintEntries); err != nil {
+		return lintEntries, fmt.Errorf("decoding output from eslint: %w", err)
+	}
+
+	for _, entry := range esLintEntries {
 		for _, msg := range entry.Messages {
-			var severity string
+			var severity codeclimate.Severity
 
 			switch msg.Severity {
 			case 0:
-				severity = "info"
+				severity = codeclimate.SeverityInfo
 			case 1:
-				severity = "warning"
+				severity = codeclimate.SeverityMinor
 			case 2:
-				severity = "error"
+				severity = codeclimate.SeverityMajor
+			default:
+				return nil, fmt.Errorf("yarn run lint: unknown severity %d", msg.Severity)
 			}
 
 			ccEntry := codeclimate.Entry{
@@ -116,9 +115,9 @@ func runEslint(cwd string, env []string) ([]codeclimate.Entry, error) {
 				},
 			}
 
-			result = append(result, ccEntry)
+			lintEntries = append(lintEntries, ccEntry)
 		}
 	}
 
-	return result, err
+	return lintEntries, nil
 }

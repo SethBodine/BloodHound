@@ -14,17 +14,16 @@
 //
 // SPDX-License-Identifier: Apache-2.0
 
-import React from 'react';
-import { TableRow, TableCell, Box } from '@mui/material';
+import { Box, Skeleton, TableCell, TableRow } from '@mui/material';
 import withStyles from '@mui/styles/withStyles';
-import { Skeleton } from '@mui/material';
+import React from 'react';
 
 interface LoadContainerProps {
-    icon: any;
-    value?: number;
+    icon: JSX.Element;
+    loading: boolean;
     display: string;
+    value?: number;
     type?: 'percent' | 'number';
-    loading?: boolean;
 }
 
 const StyledTableRow = withStyles({
@@ -35,22 +34,7 @@ const StyledTableRow = withStyles({
     },
 })(TableRow);
 
-const LoadContainer: React.FC<LoadContainerProps> = ({ icon, value = 0, display, type = 'number', loading }) => {
-    if (loading)
-        return (
-            <StyledTableRow>
-                <TableCell>
-                    <Box display='inline-block' width='32px' textAlign='center'>
-                        {icon}
-                    </Box>
-                    {display}
-                </TableCell>
-                <TableCell align='right'>
-                    <Skeleton variant='text' />
-                </TableCell>
-            </StyledTableRow>
-        );
-
+const LoadContainer: React.FC<LoadContainerProps> = ({ icon, loading, display, value = 0, type = 'number' }) => {
     return (
         <StyledTableRow>
             <TableCell>
@@ -60,7 +44,13 @@ const LoadContainer: React.FC<LoadContainerProps> = ({ icon, value = 0, display,
                 {display}
             </TableCell>
             <TableCell align='right'>
-                {type === 'percent' ? `${Math.floor(value * 100)}%` : value.toLocaleString()}
+                {loading ? (
+                    <Skeleton variant='text' />
+                ) : type === 'percent' ? (
+                    `${Math.floor(value * 100)}%`
+                ) : (
+                    value.toLocaleString()
+                )}
             </TableCell>
         </StyledTableRow>
     );

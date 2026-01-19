@@ -19,17 +19,17 @@ package azure
 import (
 	"context"
 	"fmt"
+	"log/slog"
 	"sync"
 
 	"github.com/gofrs/uuid"
-	"github.com/specterops/bloodhound/analysis"
-	"github.com/specterops/bloodhound/dawgs/graph"
-	"github.com/specterops/bloodhound/dawgs/ops"
-	"github.com/specterops/bloodhound/dawgs/query"
-	"github.com/specterops/bloodhound/graphschema/azure"
-	"github.com/specterops/bloodhound/graphschema/common"
-	"github.com/specterops/bloodhound/log"
-	"github.com/specterops/bloodhound/src/model"
+	"github.com/specterops/bloodhound/cmd/api/src/model"
+	"github.com/specterops/bloodhound/packages/go/analysis"
+	"github.com/specterops/bloodhound/packages/go/graphschema/azure"
+	"github.com/specterops/bloodhound/packages/go/graphschema/common"
+	"github.com/specterops/dawgs/graph"
+	"github.com/specterops/dawgs/ops"
+	"github.com/specterops/dawgs/query"
 )
 
 func GraphStats(ctx context.Context, db graph.Database) (model.AzureDataQualityStats, model.AzureDataQualityAggregation, error) {
@@ -38,8 +38,7 @@ func GraphStats(ctx context.Context, db graph.Database) (model.AzureDataQualityS
 		stats       = model.AzureDataQualityStats{}
 		runID       string
 
-		kinds = graph.Kinds{azure.User, azure.Group, azure.App, azure.ServicePrincipal, azure.Device,
-			azure.ManagementGroup, azure.Subscription, azure.ResourceGroup, azure.VM, azure.KeyVault}
+		kinds = azure.NodeKinds()
 	)
 
 	if newUUID, err := uuid.NewV4(); err != nil {
@@ -56,7 +55,7 @@ func GraphStats(ctx context.Context, db graph.Database) (model.AzureDataQualityS
 		} else {
 			for _, tenant := range tenants {
 				if tenantObjectID, err := tenant.Properties.Get(common.ObjectID.String()).String(); err != nil {
-					log.Errorf("Tenant node %d does not have a valid %s property: %v", tenant.ID, common.ObjectID, err)
+					slog.ErrorContext(ctx, fmt.Sprintf("Tenant node %d does not have a valid %s property: %v", tenant.ID, common.ObjectID, err))
 				} else {
 					aggregation.Tenants++
 
@@ -76,6 +75,11 @@ func GraphStats(ctx context.Context, db graph.Database) (model.AzureDataQualityS
 
 					for _, kind := range kinds {
 						innerKind := kind
+
+						if innerKind == azure.Entity {
+							continue
+						}
+
 						if err := operation.SubmitReader(func(ctx context.Context, tx graph.Transaction, _ chan<- any) error {
 							if count, err := tx.Nodes().Filterf(func() graph.Criteria {
 								return query.And(
@@ -126,7 +130,39 @@ func GraphStats(ctx context.Context, db graph.Database) (model.AzureDataQualityS
 								case azure.KeyVault:
 									stat.KeyVaults = int(count)
 									aggregation.KeyVaults += int(count)
+
+								case azure.AutomationAccount:
+									stat.AutomationAccounts = int(count)
+									aggregation.AutomationAccounts += int(count)
+
+								case azure.ContainerRegistry:
+									stat.ContainerRegistries = int(count)
+									aggregation.ContainerRegistries += int(count)
+
+								case azure.FunctionApp:
+									stat.FunctionApps = int(count)
+									aggregation.FunctionApps += int(count)
+
+								case azure.LogicApp:
+									stat.LogicApps = int(count)
+									aggregation.LogicApps += int(count)
+
+								case azure.ManagedCluster:
+									stat.ManagedClusters = int(count)
+									aggregation.ManagedClusters += int(count)
+
+								case azure.VMScaleSet:
+									stat.VMScaleSets = int(count)
+									aggregation.VMScaleSets += int(count)
+
+								case azure.WebApp:
+									stat.WebApps = int(count)
+									aggregation.WebApps += int(count)
+
+								case azure.Tenant:
+									// Do nothing. Only AzureDataQualityAggregation stats have tenant stats and the tenants stats are handled in the outer tenant loop
 								}
+
 								mutex.Unlock()
 								return nil
 							}

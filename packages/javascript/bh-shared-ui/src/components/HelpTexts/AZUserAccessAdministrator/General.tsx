@@ -14,12 +14,15 @@
 //
 // SPDX-License-Identifier: Apache-2.0
 
-import { FC } from 'react';
 import { Typography } from '@mui/material';
+import { FC } from 'react';
 
 const General: FC = () => {
     return (
-        <Typography variant='body2'>The User Access Admin role can edit roles against many other objects</Typography>
+        <Typography variant='body2'>
+            The User Access Administrator role can manage user access to Azure resources, assign roles in Azure RBAC,
+            and assign the Owner role to themselves or others.
+        </Typography>
     );
 };
 

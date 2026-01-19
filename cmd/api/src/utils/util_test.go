@@ -19,17 +19,16 @@ package utils_test
 import (
 	"context"
 	"encoding/json"
-	"github.com/specterops/bloodhound/headers"
-	"github.com/specterops/bloodhound/mediatypes"
 	"io"
 	"net/http"
 	"net/http/httptest"
 	"net/url"
 	"testing"
 
+	"github.com/specterops/bloodhound/cmd/api/src/utils"
+	"github.com/specterops/bloodhound/packages/go/headers"
+	"github.com/specterops/bloodhound/packages/go/mediatypes"
 	"github.com/stretchr/testify/require"
-
-	"github.com/specterops/bloodhound/src/utils"
 )
 
 func TestIsValidClientVersion(t *testing.T) {
@@ -242,4 +241,14 @@ func TestHeaderMatches(t *testing.T) {
 	if !utils.HeaderMatches(header, headers.ContentType.String(), mediatypes.ApplicationJson.String()) {
 		t.Fatalf("Expected content type %s to match %s", mediatypes.ApplicationJson.String(), mediatypes.ApplicationJson.String())
 	}
+}
+
+func TestIsValidEmail(t *testing.T) {
+	t.Run("is valid email", func(t *testing.T) {
+		require.True(t, utils.IsValidEmail("odoylerules@specterops.io"))
+	})
+
+	t.Run("is not valid email", func(t *testing.T) {
+		require.False(t, utils.IsValidEmail("odoyle"))
+	})
 }

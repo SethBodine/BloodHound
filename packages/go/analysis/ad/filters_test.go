@@ -17,12 +17,13 @@
 package ad_test
 
 import (
-	ad2 "github.com/specterops/bloodhound/analysis/ad"
-	"github.com/specterops/bloodhound/dawgs/graph"
-	"github.com/specterops/bloodhound/graphschema/ad"
-	"github.com/specterops/bloodhound/graphschema/common"
-	"github.com/stretchr/testify/assert"
 	"testing"
+
+	ad2 "github.com/specterops/bloodhound/packages/go/analysis/ad"
+	"github.com/specterops/bloodhound/packages/go/graphschema/ad"
+	"github.com/specterops/bloodhound/packages/go/graphschema/common"
+	"github.com/specterops/dawgs/graph"
+	"github.com/stretchr/testify/assert"
 )
 
 func TestSelectGPOContainerCandidateFilter(t *testing.T) {

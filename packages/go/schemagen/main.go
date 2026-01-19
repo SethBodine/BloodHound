@@ -17,14 +17,15 @@
 package main
 
 import (
+	"fmt"
+	"log/slog"
 	"os"
 	"path/filepath"
 
 	"cuelang.org/go/cue/errors"
-	"github.com/specterops/bloodhound/log"
-	"github.com/specterops/bloodhound/schemagen/generator"
-	"github.com/specterops/bloodhound/schemagen/model"
-	"github.com/specterops/bloodhound/schemagen/tsgen"
+	"github.com/specterops/bloodhound/packages/go/schemagen/generator"
+	"github.com/specterops/bloodhound/packages/go/schemagen/model"
+	"github.com/specterops/bloodhound/packages/go/schemagen/tsgen"
 )
 
 type Schema struct {
@@ -38,7 +39,11 @@ func GenerateGolang(projectRoot string, rootSchema Schema) error {
 		return err
 	}
 
-	if err := generator.GenerateGolangGraphModel("common", filepath.Join(projectRoot, "packages/go/graphschema/common"), rootSchema.Common); err != nil {
+	writeable, path := generator.GenerateGolangGraphModel("common", filepath.Join(projectRoot, "packages/go/graphschema/common"), rootSchema.Common)
+
+	generator.WriteGolangStringEnumeration(writeable, "Property", rootSchema.Common.Properties)
+
+	if err := generator.WriteSourceFile(writeable, path); err != nil {
 		return err
 	}
 
@@ -63,37 +68,50 @@ func GenerateSharedTypeScript(projectRoot string, rootSchema Schema) error {
 	return root.Write(os.O_TRUNC|os.O_CREATE|os.O_WRONLY, 0644)
 }
 
-func main() {
-	log.Configure(log.DefaultConfiguration().WithLevel(log.LevelDebug))
+func GenerateCSharp(projectRoot string, rootSchema Schema) error {
+	return generator.GenerateCSharpBindings(projectRoot, rootSchema.Common, rootSchema.ActiveDirectory)
+}
 
+func main() {
 	cfgBuilder := generator.NewConfigBuilder("/schemas")
 
 	if projectRoot, err := generator.FindGolangWorkspaceRoot(); err != nil {
-		log.Fatalf("Error finding project root: %v", err)
+		slog.Error(fmt.Sprintf("Error finding project root: %v", err))
+		os.Exit(1)
 	} else {
-		log.Infof("Project root is %s", projectRoot)
+		slog.Info(fmt.Sprintf("Project root is %s", projectRoot))
 
 		if err := cfgBuilder.OverlayPath(filepath.Join(projectRoot, "packages/cue")); err != nil {
-			log.Fatalf("Error: %v", err)
+			slog.Error(fmt.Sprintf("Error: %v", err))
+			os.Exit(1)
 		}
 
 		cfg := cfgBuilder.Build()
 
 		if bhInstance, err := cfg.Value("/schemas/bh/bh.cue"); err != nil {
-			log.Fatalf("Error: %v", errors.Details(err, nil))
+			slog.Error(fmt.Sprintf("Error: %v", errors.Details(err, nil)))
+			os.Exit(1)
 		} else {
 			var bhModels Schema
 
 			if err := bhInstance.Decode(&bhModels); err != nil {
-				log.Fatalf("Error: %v", errors.Details(err, nil))
+				slog.Error(fmt.Sprintf("Error: %v", errors.Details(err, nil)))
+				os.Exit(1)
 			}
 
 			if err := GenerateGolang(projectRoot, bhModels); err != nil {
-				log.Fatalf("Error %v", err)
+				slog.Error(fmt.Sprintf("Error %v", err))
+				os.Exit(1)
 			}
 
 			if err := GenerateSharedTypeScript(projectRoot, bhModels); err != nil {
-				log.Fatalf("Error %v", err)
+				slog.Error(fmt.Sprintf("Error %v", err))
+				os.Exit(1)
+			}
+
+			if err := GenerateCSharp(projectRoot, bhModels); err != nil {
+				slog.Error(fmt.Sprintf("Error %v", err))
+				os.Exit(1)
 			}
 		}
 	}

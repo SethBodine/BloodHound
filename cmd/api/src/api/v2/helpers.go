@@ -17,6 +17,7 @@
 package v2
 
 import (
+	"errors"
 	"fmt"
 	"net/http"
 	"net/url"
@@ -25,10 +26,9 @@ import (
 	"time"
 
 	"github.com/gorilla/mux"
-	"github.com/specterops/bloodhound/errors"
-	"github.com/specterops/bloodhound/src/api"
-	"github.com/specterops/bloodhound/src/model"
-	"github.com/specterops/bloodhound/src/utils"
+	"github.com/specterops/bloodhound/cmd/api/src/api"
+	"github.com/specterops/bloodhound/cmd/api/src/model"
+	"github.com/specterops/bloodhound/cmd/api/src/utils"
 )
 
 type DataType int
@@ -57,12 +57,39 @@ func ParseSkipQueryParameter(params url.Values, defaultValue int) (int, error) {
 	}
 }
 
+func ParseSkipQueryParameterWithKey(params url.Values, key string, defaultValue int) (int, error) {
+	if param := params.Get(key); param == "" {
+		return defaultValue, nil
+	} else if skip, err := strconv.Atoi(param); err != nil {
+		return 0, fmt.Errorf("error converting %s value %v to int: %v", key, param, err)
+	} else if skip < 0 {
+		return 0, fmt.Errorf(utils.ErrorInvalidSkip, skip)
+	} else {
+		return skip, nil
+	}
+}
+
 func ParseLimitQueryParameter(params url.Values, defaultValue int) (int, error) {
 	if param := params.Get(model.PaginationQueryParameterLimit); param == "" {
 		return defaultValue, nil
 	} else if limit, err := strconv.Atoi(param); err != nil {
 		return 0, fmt.Errorf("error converting limit value %v to int: %v", param, err)
 	} else if limit < 0 {
+		return 0, fmt.Errorf(utils.ErrorInvalidLimit, limit)
+	} else {
+		return limit, nil
+	}
+}
+
+// ParseOptionalLimitQueryParameter should only be used if the endpoint is safe to return all results for a given query
+// This will allow the user to submit an API call with `limit=-1` which will in turn allow the database to return unlimited
+// results.
+func ParseOptionalLimitQueryParameter(params url.Values, defaultValue int) (int, error) {
+	if param := params.Get(model.PaginationQueryParameterLimit); param == "" {
+		return defaultValue, nil
+	} else if limit, err := strconv.Atoi(param); err != nil {
+		return 0, fmt.Errorf("error converting limit value %v to int: %v", param, err)
+	} else if limit < -1 {
 		return 0, fmt.Errorf(utils.ErrorInvalidLimit, limit)
 	} else {
 		return limit, nil
@@ -79,7 +106,7 @@ func ParseTimeQueryParameter(params url.Values, key string, defaultValue time.Ti
 
 func GetEntityObjectIDFromRequestPath(req *http.Request) (string, error) {
 	if id, hasID := mux.Vars(req)["object_id"]; !hasID {
-		return "", errors.Error("no object ID found in request")
+		return "", errors.New("no object ID found in request")
 	} else {
 		return id, nil
 	}

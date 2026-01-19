@@ -14,15 +14,14 @@
 //
 // SPDX-License-Identifier: Apache-2.0
 
-import { FC } from 'react';
 import { Box, Link, List, ListItem, Typography } from '@mui/material';
-import { useHelpTextStyles } from '../utils';
+import { FC } from 'react';
+import { hasChildCodeElementsClasses } from '../utils';
 
 const LinuxAbuse: FC = () => {
-    const classes = useHelpTextStyles();
     const step1 = (
         <>
-            <Typography variant='body2' className={classes.containsCodeEl}>
+            <Typography variant='body2' className={hasChildCodeElementsClasses}>
                 <b>Step 1: </b>Set UPN of victim to targeted principal's <code>sAMAccountName</code>.
                 <br />
                 <br />
@@ -36,7 +35,7 @@ const LinuxAbuse: FC = () => {
 
     const step2 = (
         <>
-            <Typography variant='body2' className={classes.containsCodeEl}>
+            <Typography variant='body2' className={hasChildCodeElementsClasses}>
                 <b>Step 2: </b>Check if <code>mail</code> attribute of victim must be set and set it if required.
                 <br />
                 <br />
@@ -70,18 +69,14 @@ const LinuxAbuse: FC = () => {
                 If the victim does not has the mail attribute set, set it to a dummy mail using ldapmodify:
             </Typography>
             <Typography component={'pre'}>
-                {`echo -e "dn: VICTIM-DN\nchangetype: modify\nreplace: mail\nmail: test@mail.com" | ldapmodify -x -D "ATTACKER-DN" -w 'PWD' -h DOMAIN-DNS-NAME`}
+                {`echo -e "dn: VICTIM-DN\\nchangetype: modify\\nreplace: mail\\nmail: test@mail.com" | ldapmodify -x -D "ATTACKER-DN" -w 'PWD' -h DOMAIN-DNS-NAME`}
             </Typography>
         </>
     );
 
     const step3 = (
-        <Box
-            sx={{
-                borderRadius: '4px',
-                backgroundColor: '#eee',
-            }}>
-            <Typography variant='body2' sx={{ marginBottom: '-8px' }}>
+        <Box>
+            <Typography variant='body2' className='-mb-2'>
                 <b>Step 3: </b>Obtain a session as victim.
                 <br />
                 <br />
@@ -92,16 +87,16 @@ const LinuxAbuse: FC = () => {
                 Credentials attack (see{' '}
                 <Link
                     target='blank'
-                    rel='noopener'
-                    href='https://support.bloodhoundenterprise.io/hc/en-us/articles/17358104809499-AddKeyCredentialLink'>
+                    rel='noopener noreferrer'
+                    href='https://bloodhound.specterops.io/resources/edges/add-key-credential-link'>
                     AddKeyCredentialLink edge documentation
                 </Link>
                 ). Alternatively, you can obtain a session as SYSTEM on the host, which allows you to interact with AD
                 as the computer account, by abusing control over the computer AD object (see{' '}
                 <Link
                     target='blank'
-                    rel='noopener'
-                    href='https://support.bloodhoundenterprise.io/hc/en-us/articles/17312347318043-GenericAll'>
+                    rel='noopener noreferrer'
+                    href='https://bloodhound.specterops.io/resources/edges/generic-all'>
                     GenericAll edge documentation
                 </Link>
                 ).
@@ -109,13 +104,13 @@ const LinuxAbuse: FC = () => {
                 <br />
                 If the victim is a user, you have the following options for obtaining the credentials:
             </Typography>
-            <List sx={{ fontSize: '12px' }}>
+            <List className='text-xs'>
                 <ListItem>
                     Shadow Credentials attack (see{' '}
                     <Link
                         target='blank'
-                        rel='noopener'
-                        href='https://support.bloodhoundenterprise.io/hc/en-us/articles/17358104809499-AddKeyCredentialLink'>
+                        rel='noopener noreferrer'
+                        href='https://bloodhound.specterops.io/resources/edges/add-key-credential-link'>
                         AddKeyCredentialLink edge documentation
                     </Link>
                     )
@@ -124,8 +119,8 @@ const LinuxAbuse: FC = () => {
                     Password reset (see{' '}
                     <Link
                         target='blank'
-                        rel='noopener'
-                        href='https://support.bloodhoundenterprise.io/hc/en-us/articles/17223286750747-ForceChangePassword'>
+                        rel='noopener noreferrer'
+                        href='https://bloodhound.specterops.io/resources/edges/force-change-password'>
                         ForceChangePassword edge documentation
                     </Link>
                     )
@@ -134,8 +129,8 @@ const LinuxAbuse: FC = () => {
                     Targeted Kerberoasting (see{' '}
                     <Link
                         target='blank'
-                        rel='noopener'
-                        href='https://support.bloodhoundenterprise.io/hc/en-us/articles/17222775975195-WriteSPN'>
+                        rel='noopener noreferrer'
+                        href='https://bloodhound.specterops.io/resources/edges/write-spn'>
                         WriteSPN edge documentation
                     </Link>
                     )

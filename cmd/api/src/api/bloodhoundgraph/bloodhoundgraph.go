@@ -16,6 +16,10 @@
 
 package bloodhoundgraph
 
+import "github.com/specterops/dawgs/graph"
+
+//TODO: Move styling responsibilities to the UI or move shared styling definitions to a cue file to generate from one source of truth
+
 type BloodHoundGraphGlyph struct {
 	Angle    int                        `json:"angle,omitempty"`
 	Blink    bool                       `json:"blink,omitempty"`
@@ -126,131 +130,140 @@ type BloodHoundGraphLink struct {
 	Width     int                       `json:"width,omitempty"`
 }
 
+func (s *BloodHoundGraphNode) SetNodeStyle(nType string) {
+	s.SetIcon(nType)
+	s.SetBackground(nType)
+}
+
 func (s *BloodHoundGraphNode) SetIcon(nType string) {
 	switch nType {
 	case "AZApp":
 		s.FontIcon = &BloodHoundGraphFontIcon{
-			Text: "fa-window-restore",
+			Text: "fas fa-window-restore",
 		}
 	case "AZVMScaleSet":
 		s.FontIcon = &BloodHoundGraphFontIcon{
-			Text: "fa-server",
+			Text: "fas fa-server",
 		}
 	case "AZDevice":
 		s.FontIcon = &BloodHoundGraphFontIcon{
-			Text: "fa-desktop",
+			Text: "fas fa-desktop",
 		}
 	case "AZFunctionApp":
 		s.FontIcon = &BloodHoundGraphFontIcon{
-			Text: "fa-bolt",
+			Text: "fas fa-bolt",
 		}
 	case "AZGroup":
 		s.FontIcon = &BloodHoundGraphFontIcon{
-			Text: "fa-users",
+			Text: "fas fa-users",
 		}
 	case "AZKeyVault":
 		s.FontIcon = &BloodHoundGraphFontIcon{
-			Text: "fa-lock",
+			Text: "fas fa-lock",
 		}
 	case "AZManagementGroup":
 		s.FontIcon = &BloodHoundGraphFontIcon{
-			Text: "fa-sitemap",
+			Text: "fas fa-sitemap",
 		}
 	case "AZResourceGroup":
 		s.FontIcon = &BloodHoundGraphFontIcon{
-			Text: "fa-cube",
+			Text: "fas fa-cube",
 		}
 	case "AZRole":
 		s.FontIcon = &BloodHoundGraphFontIcon{
-			Text: "fa-clipboard-list",
+			Text: "fas fa-clipboard-list",
 		}
 	case "AZServicePrincipal":
 		s.FontIcon = &BloodHoundGraphFontIcon{
-			Text: "fa-robot",
+			Text: "fas fa-robot",
 		}
 	case "AZSubscription":
 		s.FontIcon = &BloodHoundGraphFontIcon{
-			Text: "fa-key",
+			Text: "fas fa-key",
 		}
 	case "AZTenant":
 		s.FontIcon = &BloodHoundGraphFontIcon{
-			Text: "fa-cloud",
+			Text: "fas fa-cloud",
 		}
 	case "AZUser":
 		s.FontIcon = &BloodHoundGraphFontIcon{
-			Text: "fa-user",
+			Text: "fas fa-user",
 		}
 	case "AZVM":
 		s.FontIcon = &BloodHoundGraphFontIcon{
-			Text: "fa-desktop",
+			Text: "fas fa-desktop",
 		}
 	case "AZManagedCluster":
 		s.FontIcon = &BloodHoundGraphFontIcon{
-			Text: "fa-cubes",
+			Text: "fas fa-cubes",
 		}
 	case "AZContainerRegistry":
 		s.FontIcon = &BloodHoundGraphFontIcon{
-			Text: "fa-box-open",
+			Text: "fas fa-box-open",
 		}
 	case "AZWebApp":
 		s.FontIcon = &BloodHoundGraphFontIcon{
-			Text: "fa-object-group",
+			Text: "fas fa-object-group",
 		}
 	case "AZLogicApp":
 		s.FontIcon = &BloodHoundGraphFontIcon{
-			Text: "fa-sitemap",
+			Text: "fas fa-sitemap",
 		}
 	case "AZAutomationAccount":
 		s.FontIcon = &BloodHoundGraphFontIcon{
-			Text: "fa-cog",
+			Text: "fas fa-cog",
 		}
 	case "User":
 		s.FontIcon = &BloodHoundGraphFontIcon{
-			Text: "fa-user",
+			Text: "fas fa-user",
 		}
 	case "Group":
 		s.FontIcon = &BloodHoundGraphFontIcon{
-			Text: "fa-users",
+			Text: "fas fa-users",
 		}
 	case "Computer":
 		s.FontIcon = &BloodHoundGraphFontIcon{
-			Text: "fa-desktop",
+			Text: "fas fa-desktop",
 		}
 	case "Container":
 		s.FontIcon = &BloodHoundGraphFontIcon{
-			Text: "fa-box",
+			Text: "fas fa-box",
 		}
 	case "Domain":
 		s.FontIcon = &BloodHoundGraphFontIcon{
-			Text: "fa-globe",
+			Text: "fas fa-globe",
 		}
 	case "OU":
 		s.FontIcon = &BloodHoundGraphFontIcon{
-			Text: "fa-sitemap",
+			Text: "fas fa-sitemap",
 		}
 	case "GPO":
 		s.FontIcon = &BloodHoundGraphFontIcon{
-			Text: "fa-list",
+			Text: "fas fa-list",
 		}
 	case "AIACA":
 		s.FontIcon = &BloodHoundGraphFontIcon{
-			Text: "fa-box",
+			Text: "fas fa-arrows-left-right-to-line",
 		}
 	case "RootCA":
 		s.FontIcon = &BloodHoundGraphFontIcon{
-			Text: "fa-landmark",
+			Text: "fas fa-landmark",
 		}
 	case "EnterpriseCA":
 		s.FontIcon = &BloodHoundGraphFontIcon{
-			Text: "fa-building",
+			Text: "fas fa-building",
 		}
 	case "NTAuthStore":
 		s.FontIcon = &BloodHoundGraphFontIcon{
-			Text: "fa-store",
+			Text: "fas fa-store",
 		}
 	case "CertTemplate":
 		s.FontIcon = &BloodHoundGraphFontIcon{
-			Text: "fa-id-card",
+			Text: "fas fa-id-card",
+		}
+	case "IssuancePolicy":
+		s.FontIcon = &BloodHoundGraphFontIcon{
+			Text: "fas fa-clipboard-check",
 		}
 	case "Meta":
 		if tier, ok := s.Data["admintier"]; ok {
@@ -264,7 +277,7 @@ func (s *BloodHoundGraphNode) SetIcon(nType string) {
 		}
 	default:
 		s.FontIcon = &BloodHoundGraphFontIcon{
-			Text: "fa-question",
+			Text: "fas fa-question",
 		}
 	}
 }
@@ -272,70 +285,77 @@ func (s *BloodHoundGraphNode) SetIcon(nType string) {
 func (s *BloodHoundGraphNode) SetBackground(nType string) {
 	switch nType {
 	case "AZApp":
-		s.BloodHoundGraphItem.Color = "#03FC84"
+		s.Color = "#03FC84"
 	case "AZVMScaleSet":
-		s.BloodHoundGraphItem.Color = "#007CD0"
+		s.Color = "#007CD0"
 	case "AZDevice":
-		s.BloodHoundGraphItem.Color = "#B18FCF"
+		s.Color = "#B18FCF"
 	case "AZFunctionApp":
-		s.BloodHoundGraphItem.Color = "#F4BA44"
+		s.Color = "#F4BA44"
 	case "AZGroup":
-		s.BloodHoundGraphItem.Color = "#F57C9B"
+		s.Color = "#F57C9B"
 	case "AZKeyVault":
-		s.BloodHoundGraphItem.Color = "#ED658C"
+		s.Color = "#ED658C"
 	case "AZManagementGroup":
-		s.BloodHoundGraphItem.Color = "#BD93D8"
+		s.Color = "#BD93D8"
 	case "AZResourceGroup":
-		s.BloodHoundGraphItem.Color = "#89BD9E"
+		s.Color = "#89BD9E"
 	case "AZRole":
-		s.BloodHoundGraphItem.Color = "#ED8537"
+		s.Color = "#ED8537"
 	case "AZServicePrincipal":
-		s.BloodHoundGraphItem.Color = "#C1D6D6"
+		s.Color = "#C1D6D6"
 	case "AZSubscription":
-		s.BloodHoundGraphItem.Color = "#D2CCA1"
+		s.Color = "#D2CCA1"
 	case "AZTenant":
-		s.BloodHoundGraphItem.Color = "#54F2F2"
+		s.Color = "#54F2F2"
 	case "AZUser":
-		s.BloodHoundGraphItem.Color = "#34D2EB"
+		s.Color = "#34D2EB"
 	case "AZVM":
-		s.BloodHoundGraphItem.Color = "#F9ADA0"
+		s.Color = "#F9ADA0"
 	case "AZManagedCluster":
-		s.BloodHoundGraphItem.Color = "#326CE5"
+		s.Color = "#326CE5"
 	case "AZContainerRegistry":
-		s.BloodHoundGraphItem.Color = "#0885D7"
+		s.Color = "#0885D7"
 	case "AZWebApp":
-		s.BloodHoundGraphItem.Color = "#4696E9"
+		s.Color = "#4696E9"
 	case "AZLogicApp":
-		s.BloodHoundGraphItem.Color = "#9EE047"
+		s.Color = "#9EE047"
 	case "AZAutomationAccount":
-		s.BloodHoundGraphItem.Color = "#F4BA44"
+		s.Color = "#F4BA44"
 	case "User":
-		s.BloodHoundGraphItem.Color = "#17E625"
+		s.Color = "#17E625"
 	case "Group":
-		s.BloodHoundGraphItem.Color = "#DBE617"
+		s.Color = "#DBE617"
 	case "Computer":
-		s.BloodHoundGraphItem.Color = "#E67873"
+		s.Color = "#E67873"
 	case "Container":
-		s.BloodHoundGraphItem.Color = "#F79A78"
+		s.Color = "#F79A78"
 	case "Domain":
-		s.BloodHoundGraphItem.Color = "#17E6B9"
+		s.Color = "#17E6B9"
 	case "OU":
-		s.BloodHoundGraphItem.Color = "#FFAA00"
+		s.Color = "#FFAA00"
 	case "GPO":
-		s.BloodHoundGraphItem.Color = "#998EFD"
+		s.Color = "#998EFD"
 	case "AIACA":
-		s.BloodHoundGraphItem.Color = "#9769F0"
+		s.Color = "#9769F0"
 	case "RootCA":
-		s.BloodHoundGraphItem.Color = "#6968E8"
+		s.Color = "#6968E8"
 	case "EnterpriseCA":
-		s.BloodHoundGraphItem.Color = "#4696E9"
+		s.Color = "#4696E9"
 	case "NTAuthStore":
-		s.BloodHoundGraphItem.Color = "#D575F5"
+		s.Color = "#D575F5"
 	case "CertTemplate":
-		s.BloodHoundGraphItem.Color = "#B153F3"
+		s.Color = "#B153F3"
 	case "Meta":
-		s.BloodHoundGraphItem.Color = "#000"
+		s.Color = "#000"
 	default:
-		s.BloodHoundGraphItem.Color = "#EEE"
+		s.Color = "#EEE"
 	}
+}
+
+func (s *BloodHoundGraphNode) SetNodeType(kind graph.Kind) {
+	if s.Data == nil {
+		s.Data = make(map[string]any)
+	}
+	s.Data["nodetype"] = kind
 }

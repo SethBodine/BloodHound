@@ -14,8 +14,8 @@
 //
 // SPDX-License-Identifier: Apache-2.0
 
-import { FC } from 'react';
 import { Link, Typography } from '@mui/material';
+import { FC } from 'react';
 
 const Abuse: FC = () => {
     return (
@@ -32,7 +32,7 @@ const Abuse: FC = () => {
             </Typography>
 
             <Typography variant='body2'>
-                <Link target='_blank' rel='noopener' href='https://medium.com/p/52b29354fc54'>
+                <Link target='_blank' rel='noopener noreferrer' href='https://medium.com/p/52b29354fc54'>
                     Andy Robbins - Managed Identity Attack Paths, Part 2: Logic Apps
                 </Link>
             </Typography>

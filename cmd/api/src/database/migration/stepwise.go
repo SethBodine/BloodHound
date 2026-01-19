@@ -19,10 +19,10 @@ package migration
 import (
 	"fmt"
 	"io/fs"
+	"log/slog"
 
-	"github.com/specterops/bloodhound/log"
-	"github.com/specterops/bloodhound/src/model"
-	"github.com/specterops/bloodhound/src/version"
+	"github.com/specterops/bloodhound/cmd/api/src/model"
+	"github.com/specterops/bloodhound/cmd/api/src/version"
 	"gorm.io/gorm"
 )
 
@@ -49,7 +49,7 @@ func (s *Migrator) ExecuteMigrations(manifest Manifest) error {
 		}
 
 		// execute the migration(s) for this version in a transaction
-		log.Infof("Executing SQL migrations for %s", versionString)
+		slog.Info(fmt.Sprintf("Executing SQL migrations for %s", versionString))
 		if err := s.DB.Transaction(func(tx *gorm.DB) error {
 
 			for _, migration := range manifest.Migrations[versionString] {
@@ -113,7 +113,7 @@ ALTER TABLE ONLY migrations ALTER COLUMN id SET DEFAULT nextval('migrations_id_s
 ALTER TABLE ONLY migrations ADD CONSTRAINT migrations_pkey PRIMARY KEY (id);`
 	)
 
-	log.Infof("Creating migration schema...")
+	slog.Info("Creating migration schema...")
 	if err := s.DB.Transaction(func(tx *gorm.DB) error {
 		if result := tx.Exec(createMigrationTableSql); result.Error != nil {
 			return fmt.Errorf("failed to creation migration table: %w", result.Error)
@@ -145,7 +145,7 @@ func (s *Migrator) RequiresMigration() (bool, error) {
 	}
 }
 
-// executeStepwiseMigrations will run all necessary migrations for a deployment.
+// ExecuteStepwiseMigrations will run all necessary migrations for a deployment.
 // It begins by checking if migration schema exists. If it does not, we assume the
 // deployment is a new installation, otherwise we assume it may have migration updates.
 //
@@ -156,7 +156,7 @@ func (s *Migrator) RequiresMigration() (bool, error) {
 // and then build a manifest starting after the last successful version
 //
 // Once schema is verified and a manifest is created, we run ExecuteMigrations.
-func (s *Migrator) executeStepwiseMigrations() error {
+func (s *Migrator) ExecuteStepwiseMigrations() error {
 	var (
 		manifest      Manifest
 		lastMigration model.Migration
@@ -167,7 +167,7 @@ func (s *Migrator) executeStepwiseMigrations() error {
 		return fmt.Errorf("failed to check if migration table exists: %w", err)
 	} else if !hasTable {
 		// no migration table, assume this is new installation
-		log.Infof("This is a new SQL database. Initializing schema...")
+		slog.Info("This is a new SQL database. Initializing schema...")
 		//initialize migration schema and generate full manifest
 		if err = s.CreateMigrationSchema(); err != nil {
 			return fmt.Errorf("failed to create migration schema: %w", err)
@@ -185,7 +185,7 @@ func (s *Migrator) executeStepwiseMigrations() error {
 
 	// run migrations using the manifest we generated
 	if len(manifest.VersionTable) == 0 {
-		log.Infof("No new SQL migrations to run")
+		slog.Info("No new SQL migrations to run")
 		return nil
 	} else if err := s.ExecuteMigrations(manifest); err != nil {
 		return fmt.Errorf("could not execute migrations: %w", err)

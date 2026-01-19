@@ -14,29 +14,35 @@
 //
 // SPDX-License-Identifier: Apache-2.0
 
+import { ActiveDirectoryKindProperties, AzureKindProperties, CommonKindProperties } from '../graphSchema';
 import {
     ADSpecificTimeProperties,
-    formatADSpecificTime,
-    formatNumber,
-    formatBoolean,
-    formatString,
-    formatList,
+    AD_NEVER_VALUE,
+    AD_UNKNOWN_VALUE,
+    DATE_FIELDS,
     EntityField,
+    formatADSpecificTime,
+    formatBoolean,
+    formatDateString,
+    formatList,
+    formatNumber,
+    formatPrimitive,
+    validateProperty,
 } from './entityInfoDisplay';
 
 describe('Handling value formatting for Active Directory entity properties lastlogon, lastlogontimestamp, whencreated, and pwdlastset', () => {
     test('whencreated', () => {
-        expect(formatADSpecificTime(-1, ADSpecificTimeProperties.WHEN_CREATED)).toEqual('UNKNOWN');
-        expect(formatADSpecificTime(0, ADSpecificTimeProperties.WHEN_CREATED)).toEqual('UNKNOWN');
+        expect(formatADSpecificTime(-1, ADSpecificTimeProperties.WHEN_CREATED)).toEqual(AD_UNKNOWN_VALUE);
+        expect(formatADSpecificTime(0, ADSpecificTimeProperties.WHEN_CREATED)).toEqual(AD_UNKNOWN_VALUE);
         expect(formatADSpecificTime(1694549003, ADSpecificTimeProperties.WHEN_CREATED)).toEqual(
             '2023-09-12 13:03 PDT (GMT-0700)'
         );
     });
     test('lastlogon, lastlogontimestamp', () => {
-        expect(formatADSpecificTime(-1, ADSpecificTimeProperties.LAST_LOGON)).toEqual('NEVER');
-        expect(formatADSpecificTime(-1, ADSpecificTimeProperties.LAST_LOGON_TIMESTAMP)).toEqual('NEVER');
-        expect(formatADSpecificTime(0, ADSpecificTimeProperties.LAST_LOGON)).toEqual('UNKNOWN');
-        expect(formatADSpecificTime(0, ADSpecificTimeProperties.LAST_LOGON_TIMESTAMP)).toEqual('UNKNOWN');
+        expect(formatADSpecificTime(-1, ADSpecificTimeProperties.LAST_LOGON)).toEqual(AD_NEVER_VALUE);
+        expect(formatADSpecificTime(-1, ADSpecificTimeProperties.LAST_LOGON_TIMESTAMP)).toEqual(AD_NEVER_VALUE);
+        expect(formatADSpecificTime(0, ADSpecificTimeProperties.LAST_LOGON)).toEqual(AD_UNKNOWN_VALUE);
+        expect(formatADSpecificTime(0, ADSpecificTimeProperties.LAST_LOGON_TIMESTAMP)).toEqual(AD_UNKNOWN_VALUE);
         expect(formatADSpecificTime(1694549003, ADSpecificTimeProperties.LAST_LOGON)).toEqual(
             '2023-09-12 13:03 PDT (GMT-0700)'
         );
@@ -45,7 +51,7 @@ describe('Handling value formatting for Active Directory entity properties lastl
         );
     });
     test('pwdlastset', () => {
-        expect(formatADSpecificTime(-1, ADSpecificTimeProperties.PASSWORD_LAST_SET)).toEqual('NEVER');
+        expect(formatADSpecificTime(-1, ADSpecificTimeProperties.PASSWORD_LAST_SET)).toEqual(AD_NEVER_VALUE);
         expect(formatADSpecificTime(0, ADSpecificTimeProperties.PASSWORD_LAST_SET)).toEqual(
             'ACCOUNT CREATED BUT NO PASSWORD SET'
         );
@@ -68,7 +74,7 @@ describe('Formatting number properties', () => {
     });
 
     it('handles specific Active Directory properties differently than Azure derived properties', () => {
-        expect(formatNumber(0, 'ad', 'whencreated')).toEqual('UNKNOWN');
+        expect(formatNumber(0, 'ad', 'whencreated')).toEqual(AD_UNKNOWN_VALUE);
         //A value of 0 will not be held by azure property whencreated but this demonstrated handling the values differently
         expect(formatNumber(0, 'az', 'whencreated')).toEqual('0');
     });
@@ -90,15 +96,24 @@ describe('Formatting boolean properties', () => {
 
 describe('Formatting string properties', () => {
     it('handles ISO 8601 formatted date strings and converts it into our standard date display format', () => {
-        expect(formatString('2011-10-05T14:48:00.000Z')).toEqual('2011-10-05 07:48 PDT (GMT-0700)');
+        expect(formatDateString('2011-10-05T14:48:00.000Z')).toEqual('2011-10-05 07:48 PDT (GMT-0700)');
+        expect(formatDateString('2016')).not.toEqual('2016');
     });
-    it('does not change the value for functionallevel to be a date', () => {
-        expect(formatString('2016', 'functionallevel')).not.toEqual('2016-01-01 00:00 PST (GMT-0800)');
-        expect(formatString('2016', 'functionallevel')).toEqual('2016');
+});
 
-        //A date will be returned here if the property is not functionallevel
-        expect(formatString('2016')).toEqual('2016-01-01 00:00 PST (GMT-0800)');
-        expect(formatString('2016')).not.toEqual('2016');
+describe('Formatting strings via formatPrimive', () => {
+    it('returns a date string only if passed a string with a matching key', () => {
+        for (const dateField of DATE_FIELDS) {
+            expect(formatPrimitive('2016', null, dateField!)).toEqual('2016-01-01 00:00 PST (GMT-0800)');
+            expect(formatPrimitive('2016', null, dateField!)).not.toEqual('2016');
+        }
+
+        expect(formatPrimitive('2016', null, 'any_other_field')).toEqual('2016');
+        expect(formatPrimitive('2016', null, 'any_other_field')).not.toEqual('2016-01-01 00:00 PST (GMT-0800)');
+
+        // With no field supplied, parse as a date
+        expect(formatPrimitive('2016')).toEqual('2016-01-01 00:00 PST (GMT-0800)');
+        expect(formatPrimitive('2016')).not.toEqual('2016');
     });
 });
 
@@ -109,5 +124,26 @@ describe('Formatting list properties', () => {
             label: 'test',
         };
         expect(formatList(testEntityField)).toEqual(['test', '5', 'FALSE']);
+    });
+});
+
+describe('validating a node property against the shared generated schema', () => {
+    it('should recognize active directory properties', () => {
+        Object.values(ActiveDirectoryKindProperties).forEach((property: ActiveDirectoryKindProperties) => {
+            expect(validateProperty(property)).toEqual({ isKnownProperty: true, kind: 'ad' });
+        });
+    });
+    it('should recognize azure properties', () => {
+        Object.values(AzureKindProperties).forEach((property: AzureKindProperties) => {
+            expect(validateProperty(property)).toEqual({ isKnownProperty: true, kind: 'az' });
+        });
+    });
+    it('should recognize a common properties', () => {
+        Object.values(CommonKindProperties).forEach((property: CommonKindProperties) => {
+            expect(validateProperty(property)).toEqual({ isKnownProperty: true, kind: 'cm' });
+        });
+    });
+    it('should return an object denoting that the property is not in the schema when it is unrecognized', () => {
+        expect(validateProperty('notInSchema')).toEqual({ isKnownProperty: false, kind: null });
     });
 });

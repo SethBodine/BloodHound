@@ -5,10 +5,7 @@
   "root_url": "http://127.0.0.1:8080/",
   "work_dir": "/opt/bloodhound/work",
   "log_level": "INFO",
-  "log_path": "bloodhound.log",
-  "features": {
-    "enable_auth": true
-  },
+  "graph_driver": "neo4j",
   "tls": {
     "cert_file": "",
     "key_file": ""

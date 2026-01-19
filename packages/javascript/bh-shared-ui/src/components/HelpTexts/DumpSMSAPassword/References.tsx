@@ -14,24 +14,27 @@
 //
 // SPDX-License-Identifier: Apache-2.0
 
+import { Box, Link } from '@mui/material';
 import { FC } from 'react';
-import { Link, Box } from '@mui/material';
 
 const References: FC = () => {
     return (
-        <Box sx={{ overflowX: 'auto' }}>
-            <Link target='_blank' rel='noopener' href='https://simondotsh.com/infosec/2022/12/12/assessing-smsa.html'>
+        <Box className='overflow-x-auto'>
+            <Link
+                target='_blank'
+                rel='noopener noreferrer'
+                href='https://simondotsh.com/infosec/2022/12/12/assessing-smsa.html'>
                 https://simondotsh.com/infosec/2022/12/12/assessing-smsa.html
             </Link>
             <br />
             <Link
                 target='_blank'
-                rel='noopener'
+                rel='noopener noreferrer'
                 href='https://www.ired.team/offensive-security/credential-access-and-credential-dumping/dumping-lsa-secrets'>
                 https://www.ired.team/offensive-security/credential-access-and-credential-dumping/dumping-lsa-secrets
             </Link>
             <br />
-            <Link target='_blank' rel='noopener' href='https://github.com/gentilkiwi/mimikatz'>
+            <Link target='_blank' rel='noopener noreferrer' href='https://github.com/gentilkiwi/mimikatz'>
                 https://github.com/gentilkiwi/mimikatz
             </Link>
         </Box>

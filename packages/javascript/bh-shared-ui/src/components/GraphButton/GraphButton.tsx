@@ -14,9 +14,9 @@
 //
 // SPDX-License-Identifier: Apache-2.0
 
-import { Button } from '@mui/material';
+import { Button, ButtonProps } from '@mui/material';
 import makeStyles from '@mui/styles/makeStyles';
-import { FC } from 'react';
+import { FC, ReactNode } from 'react';
 
 const useStyles = makeStyles((theme) => ({
     button: {
@@ -27,30 +27,31 @@ const useStyles = makeStyles((theme) => ({
         border: 'none',
         boxSizing: 'initial',
         borderRadius: theme.shape.borderRadius,
-        backgroundColor: theme.palette.background.paper,
-        color: theme.palette.common.black,
+        backgroundColor: theme.palette.neutral.secondary,
+        color: theme.palette.color.primary,
         textTransform: 'capitalize',
         minWidth: 'initial',
         '&:hover': {
-            backgroundColor: theme.palette.background.default,
+            backgroundColor: theme.palette.neutral.tertiary,
             '@media (hover: none)': {
-                backgroundColor: theme.palette.background.default,
+                backgroundColor: theme.palette.neutral.tertiary,
             },
         },
     },
 }));
 
-export interface GraphButtonProps {
-    onClick: (e?: any) => void;
-    displayText: string | JSX.Element;
-    disabled?: boolean;
+export interface GraphButtonProps extends ButtonProps {
+    displayText: string | ReactNode;
 }
 
-const GraphButton: FC<GraphButtonProps> = ({ onClick, displayText, disabled }) => {
+const GraphButton: FC<GraphButtonProps> = (props) => {
+    const { displayText } = props;
+    const attributes = { ...props };
+    delete attributes.displayText;
     const styles = useStyles();
 
     return (
-        <Button onClick={onClick} disabled={disabled} classes={{ root: styles.button }}>
+        <Button {...attributes} disableRipple classes={{ root: styles.button }}>
             {displayText}
         </Button>
     );

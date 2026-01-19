@@ -14,43 +14,29 @@
 //
 // SPDX-License-Identifier: Apache-2.0
 
-import { createTheme } from '@mui/material/styles';
 import { CssBaseline, StyledEngineProvider, ThemeProvider } from '@mui/material';
+import { createTheme } from '@mui/material/styles';
 import { configureStore } from '@reduxjs/toolkit';
 import { render, renderHook } from '@testing-library/react';
+import { NotificationsProvider, darkPalette } from 'bh-shared-ui';
 import { createMemoryHistory } from 'history';
 import { SnackbarProvider } from 'notistack';
 import { QueryClient, QueryClientProvider } from 'react-query';
 import { Provider } from 'react-redux';
-import { Router } from 'react-router-dom';
+import { BrowserRouter } from 'react-router-dom';
 import createSagaMiddleware from 'redux-saga';
 import { rootReducer } from 'src/store';
-import { NotificationsProvider } from 'bh-shared-ui';
 
+const theme = createTheme(darkPalette);
 const defaultTheme = {
+    ...theme,
     palette: {
-        primary: {
-            main: '#406f8e',
-            light: '#709dbe',
-            dark: '#064460',
-            contrastText: '#ffffff',
-        },
-        neutral: {
-            main: '#e0e0e0',
-            light: '#ffffff',
-            dark: '#cccccc',
-            contrastText: '#000000',
-        },
-        background: {
-            paper: '#fafafa',
-            default: '#e4e9eb',
-        },
-        low: 'rgb(255, 195, 15)',
-        moderate: 'rgb(255, 97, 66)',
-        high: 'rgb(205, 0, 117)',
-        critical: 'rgb(76, 29, 143)',
+        ...theme.palette,
+        neutral: { ...darkPalette.neutral },
+        color: { ...darkPalette.color },
+        tertiary: { ...darkPalette.tertiary },
     },
-}
+};
 
 const createDefaultQueryClient = () => {
     return new QueryClient({
@@ -59,8 +45,8 @@ const createDefaultQueryClient = () => {
                 retry: false,
             },
         },
-    })
-}
+    });
+};
 
 const createDefaultStore = (state) => {
     return configureStore({
@@ -69,40 +55,42 @@ const createDefaultStore = (state) => {
         middleware: (getDefaultMiddleware) => {
             return [...getDefaultMiddleware({ serializableCheck: false }), createSagaMiddleware()];
         },
-    })
-}
+    });
+};
 
-const createProviders = ({ queryClient, history, theme, store, children }) => {
-    return (    
+const createProviders = ({ queryClient, route, theme, store, children }) => {
+    window.history.pushState({}, 'Test page', route);
+
+    return (
         <Provider store={store}>
             <QueryClientProvider client={queryClient}>
                 <StyledEngineProvider injectFirst>
                     <ThemeProvider theme={theme}>
+                        <CssBaseline />
                         <NotificationsProvider>
-                            <CssBaseline />
-                            <Router location={history.location} navigator={history}>
+                            <BrowserRouter>
                                 <SnackbarProvider>{children}</SnackbarProvider>
-                            </Router>
+                            </BrowserRouter>
                         </NotificationsProvider>
                     </ThemeProvider>
                 </StyledEngineProvider>
             </QueryClientProvider>
-        </Provider>    
-    )
-}
+        </Provider>
+    );
+};
 
 const customRender = (
     ui,
     {
         initialState = {},
         queryClient = createDefaultQueryClient(),
-        history = createMemoryHistory(),
-        theme = createTheme(defaultTheme),
+        route = '/',
+        theme = defaultTheme,
         store = createDefaultStore(initialState),
         ...renderOptions
     } = {}
 ) => {
-    const AllTheProviders = ({ children }) => createProviders({ queryClient, history, theme, store, children });
+    const AllTheProviders = ({ children }) => createProviders({ queryClient, route, theme, store, children });
     return render(ui, { wrapper: AllTheProviders, ...renderOptions });
 };
 
@@ -112,7 +100,7 @@ const customRenderHook = (
         initialState = {},
         queryClient = createDefaultQueryClient(),
         history = createMemoryHistory(),
-        theme = createTheme(defaultTheme),
+        theme = defaultTheme,
         store = createDefaultStore(initialState),
         ...renderOptions
     } = {}
@@ -125,5 +113,4 @@ const customRenderHook = (
 // eslint-disable-next-line react-refresh/only-export-components
 export * from '@testing-library/react';
 // override render method
-export { customRender as render };
-export { customRenderHook as renderHook };
+export { customRender as render, customRenderHook as renderHook };

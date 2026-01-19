@@ -14,19 +14,16 @@
 //
 // SPDX-License-Identifier: Apache-2.0
 
-import { FC } from 'react';
-import { typeFormat } from '../utils';
-import { EdgeInfoProps } from '../index';
 import { Typography } from '@mui/material';
+import { FC } from 'react';
+import { EdgeInfoProps } from '../index';
+import { typeFormat } from '../utils';
 
 const General: FC<EdgeInfoProps> = ({ sourceName, sourceType, targetName, targetType }) => {
     return (
         <>
             <Typography variant='body2'>
                 {typeFormat(sourceType)} {sourceName} contains the {typeFormat(targetType)} {targetName}.
-            </Typography>
-            <Typography variant='body2'>
-                GPOs linked to a container apply to all objects that are contained by the container.
             </Typography>
         </>
     );

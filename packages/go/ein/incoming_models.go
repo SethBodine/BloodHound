@@ -17,9 +17,9 @@
 package ein
 
 import (
-	"github.com/specterops/bloodhound/analysis"
-	"github.com/specterops/bloodhound/dawgs/graph"
-	"github.com/specterops/bloodhound/graphschema/ad"
+	"github.com/specterops/bloodhound/packages/go/analysis"
+	"github.com/specterops/bloodhound/packages/go/graphschema/ad"
+	"github.com/specterops/dawgs/graph"
 )
 
 const (
@@ -52,10 +52,11 @@ func (s TypedPrincipal) Kind() graph.Kind {
 }
 
 type ACE struct {
-	PrincipalSID  string
-	PrincipalType string
-	RightName     string
-	IsInherited   bool
+	PrincipalSID    string
+	PrincipalType   string
+	RightName       string
+	IsInherited     bool
+	InheritanceHash string
 }
 
 type SPNTarget struct {
@@ -66,6 +67,17 @@ type SPNTarget struct {
 
 func (s ACE) Kind() graph.Kind {
 	return parseADKind(s.PrincipalType)
+}
+
+func (s ACE) GetCachedValue() WriteOwnerLimitedPrincipal {
+	return WriteOwnerLimitedPrincipal{
+		SourceData: IngestibleEndpoint{
+			Value: s.PrincipalSID,
+			Kind:  s.Kind(),
+		},
+		IsInherited:     s.IsInherited,
+		InheritanceHash: s.InheritanceHash,
+	}
 }
 
 type IngestBase struct {
@@ -120,15 +132,22 @@ type IsUserSpecifiesSanEnabled struct {
 	Value bool
 }
 
+type RoleSeparationEnabled struct {
+	APIResult
+	Value bool
+}
+
 type CARegistryData struct {
 	CASecurity                  CASecurity
 	EnrollmentAgentRestrictions EnrollmentAgentRestrictions
 	IsUserSpecifiesSanEnabled   IsUserSpecifiesSanEnabled
+	RoleSeparationEnabled       RoleSeparationEnabled
 }
 
 type DCRegistryData struct {
-	CertificateMappingMethods           CertificateMappingMethods
-	StrongCertificateBindingEnforcement StrongCertificateBindingEnforcement
+	CertificateMappingMethods            CertificateMappingMethods
+	StrongCertificateBindingEnforcement  StrongCertificateBindingEnforcement
+	VulnerableNetlogonSecurityDescriptor VulnerableNetlogonSecurityDescriptor
 }
 
 type CertificateMappingMethods struct {
@@ -141,9 +160,19 @@ type StrongCertificateBindingEnforcement struct {
 	Value int
 }
 
+type VulnerableNetlogonSecurityDescriptor struct {
+	APIResult
+	Value string
+}
+
 type GPO IngestBase
 
 type AIACA IngestBase
+
+type IssuancePolicy struct {
+	IngestBase
+	GroupLink TypedPrincipal
+}
 
 type RootCA struct {
 	IngestBase
@@ -152,10 +181,23 @@ type RootCA struct {
 
 type EnterpriseCA struct {
 	IngestBase
-	CARegistryData       CARegistryData
-	EnabledCertTemplates []TypedPrincipal
-	HostingComputer      string
-	DomainSID            string
+	CARegistryData          CARegistryData
+	EnabledCertTemplates    []TypedPrincipal
+	HostingComputer         string
+	DomainSID               string
+	HttpEnrollmentEndpoints []CAEnrollmentAPIResult
+}
+
+type CAEnrollmentAPIResult struct {
+	APIResult
+	Result CAEnrollmentEndpoint
+}
+
+type CAEnrollmentEndpoint struct {
+	Url                    string
+	ADCSWebEnrollmentHTTP  bool
+	ADCSWebEnrollmentHTTPS bool
+	ADCSWebEnrollmentEPA   bool
 }
 
 type NTAuthStore struct {
@@ -173,29 +215,35 @@ type Session struct {
 
 type Group struct {
 	IngestBase
-	Members []TypedPrincipal
+	Members       []TypedPrincipal
+	HasSIDHistory []TypedPrincipal
 }
 
 type User struct {
 	IngestBase
-	AllowedToDelegate []TypedPrincipal
-	SPNTargets        []SPNTarget
-	PrimaryGroupSID   string
-	HasSIDHistory     []TypedPrincipal
+	AllowedToDelegate       []TypedPrincipal
+	SPNTargets              []SPNTarget
+	PrimaryGroupSID         string
+	HasSIDHistory           []TypedPrincipal
+	DomainSID               string
+	UnconstrainedDelegation bool
 }
 
 type Container struct {
 	IngestBase
-	ChildObjects []TypedPrincipal
+	ChildObjects      []TypedPrincipal
+	InheritanceHashes []string
 }
 
 type Trust struct {
-	TargetDomainSid     string
-	IsTransitive        bool
-	TrustDirection      string
-	TrustType           string
-	SidFilteringEnabled bool
-	TargetDomainName    string
+	TargetDomainSid      string
+	IsTransitive         bool
+	TrustDirection       string
+	TrustType            string
+	SidFilteringEnabled  bool
+	TargetDomainName     string
+	TGTDelegationEnabled bool
+	TrustAttributes      any
 }
 
 type GPLink struct {
@@ -205,9 +253,11 @@ type GPLink struct {
 
 type Domain struct {
 	IngestBase
-	ChildObjects []TypedPrincipal
-	Trusts       []Trust
-	Links        []GPLink
+	ChildObjects      []TypedPrincipal
+	Trusts            []Trust
+	Links             []GPLink
+	GPOChanges        GPOChanges
+	InheritanceHashes []string
 }
 
 type SessionAPIResult struct {
@@ -245,26 +295,94 @@ type UserRightsAssignmentAPIResult struct {
 	Privilege  string
 }
 
+type BoolAPIResult struct {
+	APIResult
+	Result bool
+}
+
+type SMBSigningAPIResult struct {
+	APIResult
+	Result SMBSigningResult
+}
+
+type SMBSigningResult struct {
+	SigningEnabled bool
+}
+
+type NTLMRegistryDataAPIResult struct {
+	APIResult
+	Result NTLMRegistryInfo
+}
+
+type NTLMRegistryInfo struct {
+	RestrictSendingNtlmTraffic   *uint
+	RequireSecuritySignature     *uint
+	EnableSecuritySignature      *uint
+	RestrictReceivingNTLMTraffic *uint
+	NtlmMinServerSec             *uint
+	NtlmMinClientSec             *uint
+	LmCompatibilityLevel         *uint
+	UseMachineId                 *uint
+	ClientAllowedNTLMServers     *[]string
+}
+
 type Computer struct {
 	IngestBase
-	PrimaryGroupSID    string
-	AllowedToDelegate  []TypedPrincipal
-	AllowedToAct       []TypedPrincipal
-	DumpSMSAPassword   []TypedPrincipal
-	Sessions           SessionAPIResult
-	PrivilegedSessions SessionAPIResult
-	RegistrySessions   SessionAPIResult
-	LocalGroups        []LocalGroupAPIResult
-	UserRights         []UserRightsAssignmentAPIResult
-	DCRegistryData     DCRegistryData
-	Status             ComputerStatus
-	HasSIDHistory      []TypedPrincipal
-	IsDC               bool
-	DomainSID          string
+	PrimaryGroupSID         string
+	AllowedToDelegate       []TypedPrincipal
+	AllowedToAct            []TypedPrincipal
+	DumpSMSAPassword        []TypedPrincipal
+	Sessions                SessionAPIResult
+	PrivilegedSessions      SessionAPIResult
+	RegistrySessions        SessionAPIResult
+	LocalGroups             []LocalGroupAPIResult
+	UserRights              []UserRightsAssignmentAPIResult
+	DCRegistryData          DCRegistryData
+	Status                  ComputerStatus
+	HasSIDHistory           []TypedPrincipal
+	IsDC                    bool
+	DomainSID               string
+	UnconstrainedDelegation bool
+	SmbInfo                 SMBSigningAPIResult
+	IsWebClientRunning      BoolAPIResult
+	NTLMRegistryData        NTLMRegistryDataAPIResult
+}
+
+type GPOChanges struct {
+	LocalAdmins        []TypedPrincipal
+	RemoteDesktopUsers []TypedPrincipal
+	DcomUsers          []TypedPrincipal
+	PSRemoteUsers      []TypedPrincipal
+	AffectedComputers  []TypedPrincipal
 }
 
 type OU struct {
 	IngestBase
-	ChildObjects []TypedPrincipal
-	Links        []GPLink
+	ChildObjects      []TypedPrincipal
+	Links             []GPLink
+	GPOChanges        GPOChanges
+	InheritanceHashes []string
+}
+
+type GenericMetadata struct {
+	SourceKind string `json:"source_kind"`
+}
+
+type GenericNode struct {
+	ID         string
+	Kinds      []string
+	Properties map[string]any
+}
+
+type GenericEdge struct {
+	Start      EdgeEndpoint
+	End        EdgeEndpoint
+	Kind       string
+	Properties map[string]any
+}
+
+type EdgeEndpoint struct {
+	Value   string
+	Kind    string
+	MatchBy string `json:"match_by"`
 }

@@ -1,24 +1,25 @@
 // Copyright 2023 Specter Ops, Inc.
-// 
+//
 // Licensed under the Apache License, Version 2.0
 // you may not use this file except in compliance with the License.
 // You may obtain a copy of the License at
-// 
+//
 //     http://www.apache.org/licenses/LICENSE-2.0
-// 
+//
 // Unless required by applicable law or agreed to in writing, software
 // distributed under the License is distributed on an "AS IS" BASIS,
 // WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
 // See the License for the specific language governing permissions and
 // limitations under the License.
-// 
+//
 // SPDX-License-Identifier: Apache-2.0
 
 package azure
 
 import (
-	"github.com/specterops/bloodhound/analysis"
-	"github.com/specterops/bloodhound/dawgs/graph"
+	"github.com/specterops/bloodhound/packages/go/analysis"
+	"github.com/specterops/bloodhound/packages/go/analysis/tiering"
+	"github.com/specterops/dawgs/graph"
 )
 
 // RelatedEntityType is a type for differentiating which related entities a user wants to query for. Technically all
@@ -60,6 +61,7 @@ const (
 	RelatedEntityTypeDescendentVMScaleSets              RelatedEntityType = "descendent-vm-scale-sets"
 	RelatedEntityTypeDescendentContainerRegistries      RelatedEntityType = "descendent-container-registries"
 	RelatedEntityTypeDescendentFunctionApps             RelatedEntityType = "descendent-function-apps"
+	RelatedEntityTypeRoleApprovers                      RelatedEntityType = "role-approvers"
 )
 
 // FromGraphNodes takes a slice of *graph.Node and converts them to serializable node structs.
@@ -79,15 +81,21 @@ func FromGraphNodes(nodes []*graph.Node) []Node {
 // FromGraphNode takes a *graph.Node and converts it to serializable node struct.
 func FromGraphNode(node *graph.Node) Node {
 	return Node{
-		Kind:       analysis.GetNodeKindDisplayLabel(node),
-		Properties: node.Properties.Map,
+		Kind:          analysis.GetNodeKindDisplayLabel(node),
+		Kinds:         node.Kinds.Strings(),
+		IsTierZero:    tiering.IsTierZero(node),
+		IsOwnedObject: tiering.IsOwned(node),
+		Properties:    node.Properties.Map,
 	}
 }
 
 // Node is a serializable version of *graph.Node
 type Node struct {
-	Kind       string         `json:"kind"`
-	Properties map[string]any `json:"props"`
+	Kind          string         `json:"kind"`
+	Kinds         []string       `json:"kinds"`
+	IsTierZero    bool           `json:"isTierZero"`
+	IsOwnedObject bool           `json:"isOwnedObject"`
+	Properties    map[string]any `json:"props"`
 }
 
 type BaseDetails struct {
@@ -233,6 +241,7 @@ type RoleDetails struct {
 
 	ActiveAssignments int `json:"active_assignments"`
 	PIMAssignments    int `json:"pim_assignments"`
+	Approvers         int `json:"approvers"`
 }
 
 type LogicAppDetails struct {

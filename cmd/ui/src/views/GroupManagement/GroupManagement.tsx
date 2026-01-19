@@ -15,26 +15,40 @@
 // SPDX-License-Identifier: Apache-2.0
 
 import { faGem } from '@fortawesome/free-solid-svg-icons';
-import { DropdownOption, EntityKinds, GroupManagementContent, searchbarActions } from 'bh-shared-ui';
+import {
+    DropdownOption,
+    EntityInfoDataTable,
+    EntityInfoPanel,
+    EntityKinds,
+    ExploreQueryParams,
+    GroupManagementContent,
+    HIGH_VALUE_LABEL,
+    Permission,
+    SelectedNode,
+    TIER_ZERO_TAG,
+    createTypedSearchParams,
+    useAppNavigate,
+    useExploreParams,
+    useInitialEnvironment,
+    useNodeByObjectId,
+    usePermissions,
+} from 'bh-shared-ui';
 import { AssetGroup, AssetGroupMember } from 'js-client-library';
 import { useState } from 'react';
-import { useNavigate } from 'react-router-dom';
-import { TIER_ZERO_LABEL, TIER_ZERO_TAG } from 'src/constants';
-import { setSelectedNode } from 'src/ducks/entityinfo/actions';
-import { SelectedNode } from 'src/ducks/entityinfo/types';
-import { ROUTE_EXPLORE } from 'src/ducks/global/routes';
-import { useAppDispatch, useAppSelector } from 'src/store';
-import EntityInfoPanel from '../Explore/EntityInfo/EntityInfoPanel';
-import { dataCollectionMessage } from '../QA/utils';
+import { ROUTE_EXPLORE } from 'src/routes/constants';
+import { dataCollectionMessage } from '../DataQuality/utils';
 
 const GroupManagement = () => {
-    const dispatch = useAppDispatch();
-    const navigate = useNavigate();
+    const navigate = useAppNavigate();
 
-    const globalDomain = useAppSelector((state) => state.global.options.domain);
+    const { data: environment } = useInitialEnvironment({ orderBy: 'name' });
 
     // Kept out of the shared UI due to diff between GraphNodeTypes across apps
     const [openNode, setOpenNode] = useState<SelectedNode | null>(null);
+    const getGraphNodeByObjectId = useNodeByObjectId(openNode?.id);
+    const { setExploreParams } = useExploreParams();
+
+    const { checkPermission } = usePermissions();
 
     const handleClickMember = (member: AssetGroupMember) => {
         setOpenNode({
@@ -42,19 +56,21 @@ const GroupManagement = () => {
             type: member.primary_kind as EntityKinds,
             name: member.name,
         });
+
+        setExploreParams({ expandedPanelSections: null });
     };
 
     const handleShowNodeInExplore = () => {
         if (openNode) {
-            const searchNode = {
-                objectid: openNode.id,
-                label: openNode.name,
-                ...openNode,
-            };
-            dispatch(searchbarActions.sourceNodeSelected(searchNode));
-            dispatch(setSelectedNode(openNode));
-
-            navigate(ROUTE_EXPLORE);
+            navigate({
+                pathname: ROUTE_EXPLORE,
+                search: createTypedSearchParams<ExploreQueryParams>({
+                    selectedItem: getGraphNodeByObjectId.data?.id,
+                    primarySearch: openNode?.id,
+                    searchType: 'node',
+                    exploreSearchTab: 'node',
+                }),
+            });
         }
     };
 
@@ -64,7 +80,7 @@ const GroupManagement = () => {
             const isTierZero = assetGroup.tag === TIER_ZERO_TAG;
             return {
                 key: assetGroup.id,
-                value: isTierZero ? TIER_ZERO_LABEL : assetGroup.name,
+                value: isTierZero ? HIGH_VALUE_LABEL : assetGroup.name,
                 icon: isTierZero ? faGem : undefined,
             };
         });
@@ -72,16 +88,17 @@ const GroupManagement = () => {
 
     return (
         <GroupManagementContent
-            globalDomain={globalDomain}
+            globalEnvironment={environment ?? null}
             showExplorePageLink={!!openNode}
-            tierZeroLabel={TIER_ZERO_LABEL}
+            tierZeroLabel={HIGH_VALUE_LABEL}
             tierZeroTag={TIER_ZERO_TAG}
             // Both these components should eventually be moved into the shared UI library
-            entityPanelComponent={<EntityInfoPanel selectedNode={openNode} />}
+            entityPanelComponent={<EntityInfoPanel selectedNode={openNode} DataTable={EntityInfoDataTable} />}
             domainSelectorErrorMessage={<>Domains unavailable. {dataCollectionMessage}</>}
             onShowNodeInExplore={handleShowNodeInExplore}
             onClickMember={handleClickMember}
             mapAssetGroups={mapAssetGroups}
+            userHasEditPermissions={checkPermission(Permission.GRAPH_DB_WRITE)}
         />
     );
 };

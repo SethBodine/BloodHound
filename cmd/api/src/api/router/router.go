@@ -20,11 +20,11 @@ import (
 	"net/http"
 
 	"github.com/gorilla/mux"
-	"github.com/specterops/bloodhound/src/api/middleware"
-	"github.com/specterops/bloodhound/src/auth"
-	"github.com/specterops/bloodhound/src/config"
-	"github.com/specterops/bloodhound/src/database"
-	"github.com/specterops/bloodhound/src/model"
+	"github.com/specterops/bloodhound/cmd/api/src/api/middleware"
+	"github.com/specterops/bloodhound/cmd/api/src/auth"
+	"github.com/specterops/bloodhound/cmd/api/src/config"
+	"github.com/specterops/bloodhound/cmd/api/src/database"
+	"github.com/specterops/bloodhound/cmd/api/src/model"
 )
 
 // With takes a function returning a mux.MiddlewareFunc type and applies it the to variadic list of routes
@@ -90,6 +90,17 @@ func (s *Route) RequireUserId() *Route {
 	return s
 }
 
+// SupportsETAC wraps the ETAC middleware which allows or denies a user access to an environment (domainid, tenantid), when it is used in a route's path parameter
+func (s *Route) SupportsETAC(db database.Database) *Route {
+	s.handler.Use(middleware.SupportsETACMiddleware(db))
+	return s
+}
+
+func (s *Route) RequireAllEnvironmentAccess(db database.Database) *Route {
+	s.handler.Use(middleware.RequireAllEnvironmentAccessMiddleware(db))
+	return s
+}
+
 func (s *Route) CheckFeatureFlag(db database.Database, flagKey string) *Route {
 	s.handler.Use(middleware.FeatureFlagMiddleware(db, flagKey))
 	return s
@@ -97,6 +108,7 @@ func (s *Route) CheckFeatureFlag(db database.Database, flagKey string) *Route {
 
 func NewRouter(cfg config.Configuration, authorizer auth.Authorizer, contentSecurityPolicy string) Router {
 	muxRouter := mux.NewRouter()
+	muxRouter.Use(middleware.EnsureRequestBodyClosed())
 	muxRouter.Use(middleware.SecureHandlerMiddleware(cfg, contentSecurityPolicy))
 
 	return Router{mux: muxRouter, authorizer: authorizer}

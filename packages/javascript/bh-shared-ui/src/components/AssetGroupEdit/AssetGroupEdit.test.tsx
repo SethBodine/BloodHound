@@ -14,13 +14,13 @@
 //
 // SPDX-License-Identifier: Apache-2.0
 
+import userEvent from '@testing-library/user-event';
+import { rest } from 'msw';
 import { setupServer } from 'msw/node';
 import { createMockAssetGroup, createMockMemberCounts, createMockSearchResults } from '../../mocks/factories';
 import { act, render, waitFor } from '../../test-utils';
 import { AUTOCOMPLETE_PLACEHOLDER } from './AssetGroupAutocomplete';
 import AssetGroupEdit from './AssetGroupEdit';
-import { rest } from 'msw';
-import userEvent from '@testing-library/user-event';
 
 const assetGroup = createMockAssetGroup();
 const searchResults = createMockSearchResults();
@@ -31,6 +31,13 @@ const server = setupServer(
         return res(
             ctx.json({
                 data: searchResults,
+            })
+        );
+    }),
+    rest.get(`/api/v2/custom-nodes`, async (req, res, ctx) => {
+        return res(
+            ctx.json({
+                data: [],
             })
         );
     })
@@ -44,7 +51,9 @@ describe('AssetGroupEdit', () => {
     const setup = async () => {
         const user = userEvent.setup();
         const screen = await act(async () => {
-            return render(<AssetGroupEdit assetGroup={assetGroup} filter={{}} memberCounts={memberCounts} />);
+            return render(
+                <AssetGroupEdit assetGroup={assetGroup} filter={{}} memberCounts={memberCounts} isEditable={true} />
+            );
         });
         return { user, screen };
     };
@@ -57,7 +66,7 @@ describe('AssetGroupEdit', () => {
 
     it('should display a total count of asset group members', async () => {
         const { screen } = await setup();
-        const count = screen.getByText('Total Count').nextSibling.textContent;
+        const count = screen.getByText('Total Count').nextSibling?.textContent;
         expect(count).toBe(memberCounts.total_count.toString());
     });
 
@@ -66,7 +75,7 @@ describe('AssetGroupEdit', () => {
         const input = screen.getByRole('combobox');
 
         await user.type(input, 'test');
-        expect(input.value).toEqual('test');
+        expect(input).toHaveAttribute('value', 'test');
 
         const result = await waitFor(() => screen.getByText('00001.TESTLAB.LOCAL'));
         expect(result).toBeInTheDocument();
@@ -77,8 +86,9 @@ describe('AssetGroupEdit', () => {
         const selection = searchResults[0];
 
         const input = screen.getByRole('combobox');
+
         await user.type(input, 'test');
-        expect(input.value).toEqual('test');
+        expect(input).toHaveAttribute('value', 'test');
 
         const result = await waitFor(() => screen.getByText(selection.name));
         await user.click(result);
@@ -96,7 +106,7 @@ describe('AssetGroupEdit', () => {
 
         const input = screen.getByRole('combobox');
         await user.type(input, 'test');
-        expect(input.value).toEqual('test');
+        expect(input).toHaveAttribute('value', 'test');
 
         const result = await waitFor(() => screen.getByText(selection.name));
         await user.click(result);

@@ -19,27 +19,31 @@ package services
 import (
 	"context"
 	"fmt"
+	"log/slog"
 	"time"
 
-	schema "github.com/specterops/bloodhound/graphschema"
-	"github.com/specterops/bloodhound/log"
-	"github.com/specterops/bloodhound/src/bootstrap"
-	"github.com/specterops/bloodhound/src/queries"
-
-	"github.com/specterops/bloodhound/cache"
-	"github.com/specterops/bloodhound/dawgs/graph"
-	"github.com/specterops/bloodhound/src/api"
-	"github.com/specterops/bloodhound/src/api/registration"
-	"github.com/specterops/bloodhound/src/api/router"
-	"github.com/specterops/bloodhound/src/auth"
-	"github.com/specterops/bloodhound/src/config"
-	"github.com/specterops/bloodhound/src/daemons"
-	"github.com/specterops/bloodhound/src/daemons/api/bhapi"
-	"github.com/specterops/bloodhound/src/daemons/api/toolapi"
-	"github.com/specterops/bloodhound/src/daemons/datapipe"
-	"github.com/specterops/bloodhound/src/daemons/gc"
-	"github.com/specterops/bloodhound/src/database"
-	"github.com/specterops/bloodhound/src/model/appcfg"
+	"github.com/specterops/bloodhound/cmd/api/src/api"
+	"github.com/specterops/bloodhound/cmd/api/src/api/registration"
+	"github.com/specterops/bloodhound/cmd/api/src/api/router"
+	"github.com/specterops/bloodhound/cmd/api/src/auth"
+	"github.com/specterops/bloodhound/cmd/api/src/bootstrap"
+	"github.com/specterops/bloodhound/cmd/api/src/config"
+	"github.com/specterops/bloodhound/cmd/api/src/daemons"
+	"github.com/specterops/bloodhound/cmd/api/src/daemons/api/bhapi"
+	"github.com/specterops/bloodhound/cmd/api/src/daemons/api/toolapi"
+	"github.com/specterops/bloodhound/cmd/api/src/daemons/changelog"
+	"github.com/specterops/bloodhound/cmd/api/src/daemons/datapipe"
+	"github.com/specterops/bloodhound/cmd/api/src/daemons/gc"
+	"github.com/specterops/bloodhound/cmd/api/src/database"
+	"github.com/specterops/bloodhound/cmd/api/src/migrations"
+	"github.com/specterops/bloodhound/cmd/api/src/model/appcfg"
+	"github.com/specterops/bloodhound/cmd/api/src/queries"
+	"github.com/specterops/bloodhound/cmd/api/src/services/dogtags"
+	"github.com/specterops/bloodhound/cmd/api/src/services/opengraphschema"
+	"github.com/specterops/bloodhound/cmd/api/src/services/upload"
+	"github.com/specterops/bloodhound/packages/go/cache"
+	schema "github.com/specterops/bloodhound/packages/go/graphschema"
+	"github.com/specterops/dawgs/graph"
 )
 
 // ConnectPostgres initializes a connection to PG, and returns errors if any
@@ -67,17 +71,40 @@ func ConnectDatabases(ctx context.Context, cfg config.Configuration) (bootstrap.
 	}
 }
 
+// PreMigrationDaemons Word of caution: These daemons will be launched prior to any migration starting
+func PreMigrationDaemons(ctx context.Context, cfg config.Configuration, connections bootstrap.DatabaseConnections[*database.BloodhoundDB, *graph.DatabaseSwitch]) ([]daemons.Daemon, error) {
+	return []daemons.Daemon{
+		toolapi.NewDaemon(ctx, connections, cfg, schema.DefaultGraphSchema()),
+	}, nil
+}
+
 func Entrypoint(ctx context.Context, cfg config.Configuration, connections bootstrap.DatabaseConnections[*database.BloodhoundDB, *graph.DatabaseSwitch]) ([]daemons.Daemon, error) {
+
+	dogtagsService := dogtags.NewDefaultService()
+
+	flags := dogtagsService.GetAllDogTags()
+	slog.InfoContext(ctx, "DogTags Configuration",
+		slog.String("namespace", "dogtags"),
+		slog.Any("flags", flags))
+
 	if !cfg.DisableMigrations {
-		if err := bootstrap.MigrateDB(ctx, cfg, connections.RDMS); err != nil {
+		if err := bootstrap.MigrateDB(ctx, cfg, connections.RDMS, config.NewDefaultAdminConfiguration); err != nil {
 			return nil, fmt.Errorf("rdms migration error: %w", err)
-		} else if err := bootstrap.MigrateGraph(ctx, connections.Graph, schema.DefaultGraphSchema()); err != nil {
+		} else if err := migrations.NewGraphMigrator(connections.Graph).Migrate(ctx); err != nil {
 			return nil, fmt.Errorf("graph migration error: %w", err)
 		}
 	} else if err := connections.Graph.SetDefaultGraph(ctx, schema.DefaultGraph()); err != nil {
 		return nil, fmt.Errorf("no default graph found but migrations are disabled per configuration: %w", err)
 	} else {
-		log.Infof("Database migrations are disabled per configuration")
+		slog.InfoContext(ctx, "Database migrations are disabled per configuration")
+	}
+
+	// Allow recreating the default admin account to help with lockouts/loading database dumps
+	if cfg.RecreateDefaultAdmin {
+		slog.InfoContext(ctx, "Recreating default admin user")
+		if err := bootstrap.CreateDefaultAdmin(ctx, cfg, connections.RDMS, config.NewDefaultAdminConfiguration); err != nil {
+			return nil, err
+		}
 	}
 
 	if apiCache, err := cache.NewCache(cache.Config{MaxSize: cfg.MaxAPICacheSize}); err != nil {
@@ -86,17 +113,24 @@ func Entrypoint(ctx context.Context, cfg config.Configuration, connections boots
 		return nil, fmt.Errorf("failed to create in-memory cache for graph queries: %w", err)
 	} else if collectorManifests, err := cfg.SaveCollectorManifests(); err != nil {
 		return nil, fmt.Errorf("failed to save collector manifests: %w", err)
+	} else if ingestSchema, err := upload.LoadIngestSchema(); err != nil {
+		return nil, fmt.Errorf("failed to load OpenGraph schema: %w", err)
 	} else {
+		startDelay := 0 * time.Second
+
 		var (
-			graphQuery     = queries.NewGraphQuery(connections.Graph, graphQueryCache, cfg)
-			datapipeDaemon = datapipe.NewDaemon(ctx, cfg, connections, graphQueryCache, time.Duration(cfg.DatapipeInterval)*time.Second)
-			routerInst     = router.NewRouter(cfg, auth.NewAuthorizer(connections.RDMS), bootstrap.ContentSecurityPolicy)
-			ctxInitializer = database.NewContextInitializer(connections.RDMS)
-			authenticator  = api.NewAuthenticator(cfg, connections.RDMS, ctxInitializer)
+			cl                     = changelog.NewChangelog(connections.Graph, connections.RDMS, changelog.DefaultOptions())
+			pipeline               = datapipe.NewPipeline(ctx, cfg, connections.RDMS, connections.Graph, graphQueryCache, ingestSchema, cl)
+			graphQuery             = queries.NewGraphQuery(connections.Graph, graphQueryCache, cfg)
+			authorizer             = auth.NewAuthorizer(connections.RDMS)
+			datapipeDaemon         = datapipe.NewDaemon(pipeline, startDelay, time.Duration(cfg.DatapipeInterval)*time.Second, connections.RDMS)
+			routerInst             = router.NewRouter(cfg, authorizer, fmt.Sprintf(bootstrap.ContentSecurityPolicy, "", ""))
+			authenticator          = api.NewAuthenticator(cfg, connections.RDMS, api.NewAuthExtensions(cfg, connections.RDMS))
+			openGraphSchemaService = opengraphschema.NewOpenGraphSchemaService(connections.RDMS)
 		)
 
-		registration.RegisterFossGlobalMiddleware(&routerInst, cfg, connections.RDMS, auth.NewIdentityResolver(), authenticator)
-		registration.RegisterFossRoutes(&routerInst, cfg, connections.RDMS, connections.Graph, graphQuery, apiCache, collectorManifests, authenticator, datapipeDaemon)
+		registration.RegisterFossGlobalMiddleware(&routerInst, cfg, auth.NewIdentityResolver(), authenticator)
+		registration.RegisterFossRoutes(&routerInst, cfg, connections.RDMS, connections.Graph, graphQuery, apiCache, collectorManifests, authenticator, authorizer, ingestSchema, dogtagsService, openGraphSchemaService)
 
 		// Set neo4j batch and flush sizes
 		neo4jParameters := appcfg.GetNeo4jParameters(ctx, connections.RDMS)
@@ -104,12 +138,14 @@ func Entrypoint(ctx context.Context, cfg config.Configuration, connections boots
 		connections.Graph.SetWriteFlushSize(neo4jParameters.WriteFlushSize)
 
 		// Trigger analysis on first start
-		datapipeDaemon.RequestAnalysis()
+		if err := connections.RDMS.RequestAnalysis(ctx, "init"); err != nil {
+			slog.WarnContext(ctx, fmt.Sprintf("failed to request init analysis: %v", err))
+		}
 
 		return []daemons.Daemon{
 			bhapi.NewDaemon(cfg, routerInst.Handler()),
-			toolapi.NewDaemon(ctx, connections, cfg, schema.DefaultGraphSchema()),
 			gc.NewDataPruningDaemon(connections.RDMS),
+			cl,
 			datapipeDaemon,
 		}, nil
 	}

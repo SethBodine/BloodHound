@@ -25,7 +25,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/specterops/bloodhound/headers"
+	"github.com/specterops/bloodhound/packages/go/headers"
 	"github.com/stretchr/testify/require"
 )
 
@@ -60,7 +60,7 @@ func TestRequestWaitDuration_Failure(t *testing.T) {
 	req.Header.Set(headers.Prefer.String(), "wait=1.5")
 	req.URL.RawQuery = q.Encode()
 
-	_, err = requestWaitDuration(req)
+	_, err = RequestWaitDuration(req)
 	require.NotNil(t, err)
 }
 
@@ -74,7 +74,7 @@ func TestRequestWaitDuration(t *testing.T) {
 	req.Header.Set(headers.Prefer.String(), "wait=1")
 	req.URL.RawQuery = q.Encode()
 
-	requestedWaitDuration, err := requestWaitDuration(req)
+	requestedWaitDuration, err := RequestWaitDuration(req)
 	require.Nil(t, err)
 	require.Equal(t, 1*time.Second, requestedWaitDuration)
 }
@@ -109,6 +109,6 @@ func TestParsePreferHeaderWait(t *testing.T) {
 	require.Equal(t, 5*time.Second, duration)
 
 	duration, err = parsePreferHeaderWait("")
-	require.Nil(t, err)
+	require.NotNil(t, err)
 	require.Equal(t, time.Duration(0), duration)
 }

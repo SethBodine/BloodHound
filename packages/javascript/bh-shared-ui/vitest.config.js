@@ -14,8 +14,8 @@
 //
 // SPDX-License-Identifier: Apache-2.0
 
-import { defineConfig } from 'vitest/config';
 import path from 'path';
+import { defineConfig } from 'vitest/config';
 
 export default defineConfig({
     resolve: {
@@ -33,5 +33,14 @@ export default defineConfig({
             reportsDirectory: './coverage',
             reporter: ['text-summary', 'json-summary'],
         },
+        reporters: [
+            'default',
+            [
+                'allure-vitest/reporter',
+                {
+                    resultsDir: '../../../allure-results',
+                },
+            ],
+        ],
     },
 });

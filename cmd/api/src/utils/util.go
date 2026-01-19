@@ -19,22 +19,25 @@ package utils
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"net/http"
+	"net/mail"
 	"net/url"
 	"regexp"
 	"strconv"
 	"strings"
 
-	"github.com/specterops/bloodhound/errors"
-	"github.com/specterops/bloodhound/headers"
-	"github.com/specterops/bloodhound/mediatypes"
+	"github.com/specterops/bloodhound/packages/go/headers"
+	"github.com/specterops/bloodhound/packages/go/mediatypes"
 )
 
-var ErrInvalidSharpHoundVersion = errors.New("invalid sharphound version string")
-var ErrInvalidAzureHoundVersion = errors.New("invalid azurehound version string")
-var ErrRecommendSharphoundVersion = errors.New("please upgrade to sharphound v2.0.3 or above")
-var ErrInvalidClientType = errors.New("invalid client type")
+var (
+	ErrInvalidSharpHoundVersion   = errors.New("invalid sharphound version string")
+	ErrInvalidAzureHoundVersion   = errors.New("invalid azurehound version string")
+	ErrRecommendSharphoundVersion = errors.New("please upgrade to sharphound v2.0.3 or above")
+	ErrInvalidClientType          = errors.New("invalid client type")
+)
 
 type ClientType int
 
@@ -250,4 +253,30 @@ func HeaderMatches(headers http.Header, key string, target ...string) bool {
 		}
 	}
 	return false
+}
+
+func IsValidEmail(maybeEmail string) bool {
+	_, err := mail.ParseAddress(maybeEmail)
+	return err == nil
+}
+
+// ReplaceFieldValueInJsonString replaces a field value at the root of a JSON object
+// If the field does not exist in jsonString, it will effectively do nothing
+func ReplaceFieldValueInJsonString(jsonString string, field string, value any) (string, error) {
+	var unmarshaled map[string]any
+	err := json.Unmarshal([]byte(jsonString), &unmarshaled)
+	if err != nil {
+		return "", err
+	}
+
+	if _, exists := unmarshaled[field]; exists {
+		unmarshaled[field] = value
+	}
+
+	modifiedJson, err := json.Marshal(unmarshaled)
+	if err != nil {
+		return "", err
+	}
+
+	return string(modifiedJson), nil
 }

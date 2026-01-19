@@ -16,29 +16,27 @@
 
 import { Box, CircularProgress } from '@mui/material';
 import makeStyles from '@mui/styles/makeStyles';
+import {
+    FileUploadDialog,
+    GenericErrorBoundaryFallback,
+    Permission,
+    getExcludedIds,
+    useExecuteOnFileDrag,
+    useFileUploadDialogContext,
+    useKeybindings,
+    useKeyboardShortcutsDialogContext,
+    usePermissions,
+} from 'bh-shared-ui';
 import React, { Suspense, useEffect } from 'react';
 import { ErrorBoundary } from 'react-error-boundary';
 import { Route, Routes } from 'react-router-dom';
-import { GenericErrorBoundaryFallback, apiClient } from 'bh-shared-ui';
-import { ListAssetGroups } from 'src/ducks/assetgroups/actionCreators';
-import { fullyAuthenticatedSelector } from 'src/ducks/auth/authSlice';
-import { fetchAssetGroups, setDomain } from 'src/ducks/global/actions';
-import * as routes from 'src/ducks/global/routes';
-import { useAppDispatch, useAppSelector } from 'src/store';
 import AuthenticatedRoute from 'src/components/AuthenticatedRoute';
-
-const Login = React.lazy(() => import('src/views/Login'));
-const DisabledUser = React.lazy(() => import('src/views/DisabledUser'));
-const ExpiredPassword = React.lazy(() => import('src/views/ExpiredPassword'));
-const Home = React.lazy(() => import('src/views/Home/Home'));
-const NotFound = React.lazy(() => import('src/views/NotFound'));
-const ExploreGraphView = React.lazy(() => import('./Explore/GraphView'));
-const UserProfile = React.lazy(() => import('bh-shared-ui').then((module) => ({ default: module.UserProfile })));
-const DownloadCollectors = React.lazy(() => import('./DownloadCollectors'));
-const Administration = React.lazy(() => import('./Administration'));
-const ApiExplorer = React.lazy(() => import('bh-shared-ui').then((module) => ({ default: module.ApiExplorer })));
-const GroupManagement = React.lazy(() => import('./GroupManagement/GroupManagement'));
-
+import KeyboardShortcutsDialog from 'src/components/KeyboardShortcutsDialog';
+import { ListAssetGroups } from 'src/ducks/assetgroups/actionCreators';
+import { authExpiredSelector, fullyAuthenticatedSelector } from 'src/ducks/auth/authSlice';
+import { fetchAssetGroups } from 'src/ducks/global/actions';
+import { ROUTES } from 'src/routes';
+import { useAppDispatch, useAppSelector } from 'src/store';
 const useStyles = makeStyles({
     content: {
         position: 'relative',
@@ -52,7 +50,12 @@ const Content: React.FC = () => {
     const classes = useStyles();
     const dispatch = useAppDispatch();
     const authState = useAppSelector((state) => state.auth);
+    const isAuthExpired = useAppSelector(authExpiredSelector);
+    const { showFileIngestDialog, setShowFileIngestDialog } = useFileUploadDialogContext();
+    const { showKeyboardShortcutsDialog, setShowKeyboardShortcutsDialog } = useKeyboardShortcutsDialogContext();
     const isFullyAuthenticated = useAppSelector(fullyAuthenticatedSelector);
+    const { checkPermission } = usePermissions();
+    const hasPermissionToUpload = checkPermission(Permission.GRAPH_DB_INGEST);
 
     useEffect(() => {
         if (isFullyAuthenticated) {
@@ -61,136 +64,75 @@ const Content: React.FC = () => {
         }
     }, [authState, isFullyAuthenticated, dispatch]);
 
-    // set inital domain/tenant once user is authenticated
-    useEffect(() => {
-        if (isFullyAuthenticated) {
-            const ctrl = new AbortController();
-            apiClient
-                .getAvailableDomains({ signal: ctrl.signal })
-                .then((result) => {
-                    const collectedDomains = result.data.data
-                        // omit uncollected domains
-                        .filter((domain: any) => domain.collected)
-                        // sort by impactValue descending
-                        .sort((a: any, b: any) => b.impactValue - a.impactValue);
-                    if (collectedDomains.length > 0) {
-                        dispatch(setDomain(collectedDomains[0]));
-                    } else {
-                        dispatch(setDomain(null));
-                    }
-                })
-                .catch(() => {
-                    dispatch(setDomain(null));
-                });
-            return () => ctrl.abort();
-        }
-    }, [isFullyAuthenticated, dispatch]);
+    const permitFileUploadModalLaunch =
+        !!authState.sessionToken && !!authState.user && !isAuthExpired && !getExcludedIds() && !!hasPermissionToUpload;
+    // Display ingest dialog when a processable file is dragged into the browser client
+    useExecuteOnFileDrag(() => setShowFileIngestDialog(true), {
+        condition: () => permitFileUploadModalLaunch,
+        acceptedTypes: ['application/json', 'application/zip'],
+    });
 
-    const ROUTES = [
-        {
-            path: routes.ROUTE_USER_DISABLED,
-            component: DisabledUser,
-            authenticationRequired: false,
+    useKeybindings({
+        KeyH: () => {
+            if (isFullyAuthenticated) setShowKeyboardShortcutsDialog(!showKeyboardShortcutsDialog);
         },
-        {
-            path: routes.ROUTE_LOGIN,
-            component: Login,
-            authenticationRequired: false,
+        KeyU: () => {
+            if (isFullyAuthenticated) setShowFileIngestDialog(!showFileIngestDialog);
         },
-        {
-            path: routes.ROUTE_EXPIRED_PASSWORD,
-            component: ExpiredPassword,
-            authenticationRequired: true,
-        },
-        {
-            path: routes.ROUTE_HOME,
-            component: Home,
-            authenticationRequired: true,
-        },
-        {
-            path: routes.ROUTE_EXPLORE,
-            component: ExploreGraphView,
-            authenticationRequired: true,
-        },
-        {
-            path: routes.ROUTE_GROUP_MANAGEMENT,
-            component: GroupManagement,
-            authenticationRequired: true,
-        },
-        {
-            path: routes.ROUTE_MY_PROFILE,
-            component: UserProfile,
-            authenticationRequired: true,
-        },
-        {
-            path: routes.ROUTE_DOWNLOAD_COLLECTORS,
-            component: DownloadCollectors,
-            authenticationRequired: true,
-        },
-        {
-            path: routes.ROUTE_ADMINISTRATION_ROOT,
-            component: Administration,
-            authenticationRequired: true,
-        },
-        {
-            exact: true,
-            path: routes.ROUTE_API_EXPLORER,
-            component: ApiExplorer,
-            authenticationRequired: true,
-        },
-        {
-            exact: false,
-            path: '*',
-            component: NotFound,
-            authenticationRequired: false,
-        },
-    ];
+    });
 
     return (
         <Box className={classes.content}>
-            <Suspense
-                fallback={
-                    <Box
-                        position='absolute'
-                        top='0'
-                        left='0'
-                        right='0'
-                        bottom='0'
-                        display='flex'
-                        alignItems='center'
-                        justifyContent='center'
-                        zIndex={1000}>
-                        <CircularProgress color='primary' size={80} />
-                    </Box>
-                }>
-                <Routes>
-                    {ROUTES.map((route) => {
-                        return route.authenticationRequired ? (
-                            <Route
-                                path={route.path}
-                                element={
-                                    <ErrorBoundary fallbackRender={GenericErrorBoundaryFallback}>
+            <ErrorBoundary fallbackRender={GenericErrorBoundaryFallback}>
+                <Suspense
+                    fallback={
+                        <Box
+                            position='absolute'
+                            top='0'
+                            left='0'
+                            right='0'
+                            bottom='0'
+                            display='flex'
+                            alignItems='center'
+                            justifyContent='center'
+                            zIndex={1000}>
+                            <CircularProgress color='primary' size={80} />
+                        </Box>
+                    }>
+                    <Routes>
+                        {ROUTES.map((route) => {
+                            return route.authenticationRequired ? (
+                                <Route
+                                    path={route.path}
+                                    element={
+                                        // Note: We add a left padding value to account for pages that have nav bar, h-full is because when adding the div it collapsed the views
                                         <AuthenticatedRoute>
-                                            <route.component />
+                                            <div className={`h-full ${route.navigation && 'pl-nav-width'} `}>
+                                                <route.component />
+                                            </div>
                                         </AuthenticatedRoute>
-                                    </ErrorBoundary>
-                                }
-                                key={route.path}
+                                    }
+                                    key={route.path}
+                                />
+                            ) : (
+                                <Route path={route.path} element={<route.component />} key={route.path} />
+                            );
+                        })}
+                    </Routes>
+                    {isFullyAuthenticated && (
+                        <>
+                            <KeyboardShortcutsDialog
+                                open={showKeyboardShortcutsDialog}
+                                onClose={() => setShowKeyboardShortcutsDialog(false)}
                             />
-                        ) : (
-                            <Route
-                                path={route.path}
-                                element={
-                                    <ErrorBoundary fallbackRender={GenericErrorBoundaryFallback}>
-                                        <route.component />
-                                    </ErrorBoundary>
-                                }
-                                key={route.path}
+                            <FileUploadDialog
+                                open={showFileIngestDialog}
+                                onClose={() => setShowFileIngestDialog(false)}
                             />
-                        );
-                    })}
-                </Routes>
-            </Suspense>
+                        </>
+                    )}
+                </Suspense>
+            </ErrorBoundary>
         </Box>
     );
 };

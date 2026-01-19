@@ -18,9 +18,9 @@ import extend from 'lodash/extend';
 import keys from 'lodash/keys';
 import pick from 'lodash/pick';
 import pickBy from 'lodash/pickBy';
-import { Index, Items } from 'src/utils';
 import { mapToRange, toGraphLinkColor, toWidth } from 'src/ducks/graph/colors';
 import { GraphNodeTypes } from 'src/ducks/graph/types';
+import { Index, Items } from 'src/utils';
 
 const getLinks: (data: Items) => Items[] = (data) => {
     const relKeys = Object.keys(data).filter((nodeKey) => {
@@ -216,7 +216,7 @@ const ICONS: { [id in GraphNodeTypes]: string } = {
     [GraphNodeTypes.AZSubscription]: 'fa-key',
     [GraphNodeTypes.AZTenant]: 'fa-cloud',
     [GraphNodeTypes.AZUser]: 'fa-user',
-    [GraphNodeTypes.AZVM]: 'fa-dekstop',
+    [GraphNodeTypes.AZVM]: 'fa-desktop',
     [GraphNodeTypes.AZManagedCluster]: 'fa-cubes',
     [GraphNodeTypes.AZContainerRegistry]: 'fa-box-open',
     [GraphNodeTypes.AZWebApp]: 'fa-object-group',
@@ -235,6 +235,7 @@ const ICONS: { [id in GraphNodeTypes]: string } = {
     [GraphNodeTypes.EnterpriseCA]: 'fa-box',
     [GraphNodeTypes.NTAuthStore]: 'fa-store',
     [GraphNodeTypes.CertTemplate]: 'fa-id-card',
+    [GraphNodeTypes.IssuancePolicy]: 'fa-clipboard-check',
 };
 
 const setFontIcons = (data: Items): void => {
@@ -245,16 +246,16 @@ const setFontIcons = (data: Items): void => {
 };
 
 export {
-    withLinkImact,
-    handleLabels,
-    setFontIcons,
-    getLinks,
-    getLinksIndex,
-    getNodesIndex,
+    ICONS,
     applyRelWidths,
     findRootId,
     findRootRelsIds,
     findTierZeroNodeId,
     getCombined,
-    ICONS,
+    getLinks,
+    getLinksIndex,
+    getNodesIndex,
+    handleLabels,
+    setFontIcons,
+    withLinkImact,
 };

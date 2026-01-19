@@ -14,15 +14,15 @@
 //
 // SPDX-License-Identifier: Apache-2.0
 
-import { FC } from 'react';
 import { Link, Typography } from '@mui/material';
+import { FC } from 'react';
 
 const References: FC = () => {
     return (
         <Typography variant='body2'>
             <Link
                 target='_blank'
-                rel='noopener'
+                rel='noopener noreferrer'
                 href='https://dirkjanm.io/azure-ad-privilege-escalation-application-admin/'>
                 https://dirkjanm.io/azure-ad-privilege-escalation-application-admin/
             </Link>

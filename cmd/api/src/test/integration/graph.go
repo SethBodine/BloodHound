@@ -19,27 +19,34 @@ package integration
 import (
 	"fmt"
 	"strings"
+	"testing"
 	"time"
 
-	_ "github.com/specterops/bloodhound/dawgs/drivers/neo4j"
-	"github.com/specterops/bloodhound/dawgs/graph"
-	"github.com/specterops/bloodhound/graphschema/ad"
-	"github.com/specterops/bloodhound/graphschema/azure"
-	"github.com/specterops/bloodhound/graphschema/common"
-	"github.com/specterops/bloodhound/src/test"
-	"github.com/specterops/bloodhound/src/test/must"
+	"github.com/specterops/bloodhound/cmd/api/src/test"
+	"github.com/specterops/bloodhound/cmd/api/src/test/must"
+	"github.com/specterops/bloodhound/packages/go/graphschema/ad"
+	"github.com/specterops/bloodhound/packages/go/graphschema/azure"
+	"github.com/specterops/bloodhound/packages/go/graphschema/common"
+	_ "github.com/specterops/dawgs/drivers/neo4j"
+	"github.com/specterops/dawgs/graph"
 )
 
 var DefaultRelProperties = graph.AsProperties(graph.PropertyMap{
 	common.LastSeen: time.Now().Format(time.RFC3339),
 })
 
-func NewGraphTestContext(testCtrl test.Controller, schema graph.Schema) *GraphTestContext {
-	testCtx := test.NewContext(testCtrl)
+// NewGraphTestContext creates a new GraphTestContext
+//
+// Deprecated: this suite of integration utils is deprecated and should be avoided
+// Integration tests should be updated to reflect the latest standards.
+// See commit https://github.com/SpecterOps/BloodHound/commit/a6cc43013fd769b97cc52cbc60b2314494054c9a#diff-e6bcb50873ade3cf33cef4e3e0ff566fb8ac1367b4ade36f4511bc2172a760e1
+// for implementation guidance. Additional detailed information can be found in Confluence.
+func NewGraphTestContext(t *testing.T, schema graph.Schema) *GraphTestContext {
+	testCtx := test.NewContext(t)
 
 	return &GraphTestContext{
 		testCtx: testCtx,
-		Graph:   NewGraphContext(testCtx, schema),
+		Graph:   NewGraphContext(t, testCtx, schema),
 	}
 }
 
@@ -82,10 +89,14 @@ func (s *GraphTestContext) UpdateNode(node *graph.Node) {
 	})
 }
 
-func (s *GraphTestContext) DatabaseTest(dbDelegate func(harness HarnessDetails, db graph.Database)) {
-	s.setupActiveDirectory()
-	s.setupAzure()
+func (s *GraphTestContext) InitializeHarness(harness GraphTestHarness) {
+	s.Graph.WriteTransaction(s.testCtx, func(tx graph.Transaction) error {
+		harness.Setup(s)
+		return nil
+	})
+}
 
+func (s *GraphTestContext) DatabaseTest(dbDelegate func(harness HarnessDetails, db graph.Database)) {
 	dbDelegate(s.Harness, s.Graph.Database)
 }
 
@@ -96,11 +107,6 @@ func (s *GraphTestContext) SetupHarness(setup func(harness *HarnessDetails) erro
 }
 
 func (s *GraphTestContext) DatabaseTestWithSetup(setup func(harness *HarnessDetails) error, dbDelegate func(harness HarnessDetails, db graph.Database)) {
-	// Wipe the DB before executing the test
-	s.Graph.WriteTransaction(s.testCtx, func(tx graph.Transaction) error {
-		return tx.Nodes().Delete()
-	})
-
 	s.Graph.WriteTransaction(s.testCtx, func(tx graph.Transaction) error {
 		return setup(&s.Harness)
 	})
@@ -109,8 +115,7 @@ func (s *GraphTestContext) DatabaseTestWithSetup(setup func(harness *HarnessDeta
 }
 
 func (s *GraphTestContext) BatchTest(batchDelegate func(harness HarnessDetails, batch graph.Batch), assertionDelegate func(details HarnessDetails, tx graph.Transaction)) {
-	s.setupActiveDirectory()
-	s.setupAzure()
+	s.SetupAzureAndActiveDirectory()
 
 	s.Graph.BatchOperation(s.testCtx, func(batch graph.Batch) error {
 		batchDelegate(s.Harness, batch)
@@ -124,8 +129,7 @@ func (s *GraphTestContext) BatchTest(batchDelegate func(harness HarnessDetails, 
 }
 
 func (s *GraphTestContext) TransactionalTest(txDelegate func(harness HarnessDetails, tx graph.Transaction)) {
-	s.setupActiveDirectory()
-	s.setupAzure()
+	s.SetupAzureAndActiveDirectory()
 
 	s.Graph.WriteTransaction(s.testCtx, func(tx graph.Transaction) error {
 		txDelegate(s.Harness, tx)
@@ -140,6 +144,22 @@ func (s *GraphTestContext) ReadTransactionTestWithSetup(setup func(harness *Harn
 
 	s.Graph.ReadTransaction(s.testCtx, func(tx graph.Transaction) error {
 		txDelegate(s.Harness, tx)
+		return nil
+	})
+}
+
+func (s *GraphTestContext) DatabaseTransactionTestWithSetup(setup func(harness *HarnessDetails) error, dbDelegate func(harness HarnessDetails, db graph.Database, tx graph.Transaction)) {
+	// Wipe the DB before executing the test
+	s.Graph.WriteTransaction(s.testCtx, func(tx graph.Transaction) error {
+		return tx.Nodes().Delete()
+	})
+
+	s.Graph.WriteTransaction(s.testCtx, func(tx graph.Transaction) error {
+		return setup(&s.Harness)
+	})
+
+	s.Graph.ReadTransaction(s.testCtx, func(tx graph.Transaction) error {
+		dbDelegate(s.Harness, s.Graph.Database, tx)
 		return nil
 	})
 }
@@ -195,6 +215,10 @@ func (s *GraphTestContext) NewAzureUser(name, principalName, description, object
 		azure.MFAEnabled:        mfaEnabled,
 		azure.TenantID:          tenantID,
 	}), azure.Entity, azure.User)
+}
+
+func (s *GraphTestContext) NewCustomAzureUser(properties *graph.Properties) *graph.Node {
+	return s.NewNode(properties, azure.Entity, azure.User)
 }
 
 func (s *GraphTestContext) NewAzureGroup(name, objectID, tenantID string) *graph.Node {
@@ -304,11 +328,22 @@ func (s *GraphTestContext) NewAzureTenant(tenantID string) *graph.Node {
 	return s.NewNode(graph.AsProperties(graph.PropertyMap{
 		common.Name:     "New Tenant",
 		common.ObjectID: tenantID,
+		azure.TenantID:  tenantID,
 		azure.License:   "license",
 	}), azure.Entity, azure.Tenant)
 }
 
-func (s *GraphTestContext) NewActiveDirectoryDomain(name, objectID string, blocksInheritance, collected bool) *graph.Node {
+// NewAzureBase creates a new AZBase (azure.Entity) node
+func (s *GraphTestContext) NewAzureBase(name, objectID, tenantID string) *graph.Node {
+	return s.NewNode(graph.AsProperties(graph.PropertyMap{
+		common.Name:     name,
+		common.ObjectID: objectID,
+		azure.TenantID:  tenantID,
+		azure.License:   "license",
+	}), azure.Entity)
+}
+
+func (s *GraphTestContext) NewActiveDirectoryDomain(name, objectID string, blocksInheritance, collected bool, additionalKinds ...graph.Kind) *graph.Node {
 	if collected {
 		s.Harness.NumCollectedActiveDirectoryDomains++
 	}
@@ -319,7 +354,7 @@ func (s *GraphTestContext) NewActiveDirectoryDomain(name, objectID string, block
 		ad.DomainSID:         objectID,
 		common.Collected:     collected,
 		ad.BlocksInheritance: blocksInheritance,
-	}), ad.Entity, ad.Domain)
+	}), append(additionalKinds, ad.Entity, ad.Domain)...)
 }
 
 func (s *GraphTestContext) NewActiveDirectoryComputer(name, domainSID string) *graph.Node {
@@ -330,12 +365,31 @@ func (s *GraphTestContext) NewActiveDirectoryComputer(name, domainSID string) *g
 	}), ad.Entity, ad.Computer)
 }
 
-func (s *GraphTestContext) NewActiveDirectoryUser(name, domainSID string, isTierZero ...bool) *graph.Node {
+func (s *GraphTestContext) NewActiveDirectoryContainer(name, domainSID string) *graph.Node {
 	return s.NewNode(graph.AsProperties(graph.PropertyMap{
+		common.Name:     name,
+		common.ObjectID: must.NewUUIDv4().String(),
+		ad.DomainSID:    domainSID,
+	}), ad.Entity, ad.Container)
+}
+
+func (s *GraphTestContext) NewActiveDirectoryUser(name, domainSID string, isTierZero ...bool) *graph.Node {
+
+	propertyMap := graph.PropertyMap{
 		common.Name:     name,
 		common.ObjectID: strings.ToUpper(must.NewUUIDv4().String()),
 		ad.DomainSID:    domainSID,
-	}), ad.Entity, ad.User)
+	}
+
+	if isTierZero != nil && isTierZero[0] {
+		propertyMap[common.SystemTags] = ad.AdminTierZero
+	}
+
+	return s.NewNode(graph.AsProperties(propertyMap), ad.Entity, ad.User)
+}
+
+func (s *GraphTestContext) NewCustomActiveDirectoryUser(properties *graph.Properties) *graph.Node {
+	return s.NewNode(properties, ad.Entity, ad.User)
 }
 
 func (s *GraphTestContext) NewActiveDirectoryGroup(name, domainSID string) *graph.Node {
@@ -414,7 +468,40 @@ func (s *GraphTestContext) NewActiveDirectoryRootCAWithThumbprint(name, domainSI
 	}), ad.Entity, ad.RootCA)
 }
 
+func (s *GraphTestContext) NewActiveDirectoryAIACA(name, domainSID string, certThumbprint string, certChain []string) *graph.Node {
+	return s.NewNode(graph.AsProperties(graph.PropertyMap{
+		common.Name:       name,
+		common.ObjectID:   must.NewUUIDv4().String(),
+		ad.DomainSID:      domainSID,
+		ad.CertThumbprint: certThumbprint,
+		ad.CertChain:      certChain,
+	}), ad.Entity, ad.AIACA)
+}
+
 func (s *GraphTestContext) NewActiveDirectoryCertTemplate(name, domainSID string, data CertTemplateData) *graph.Node {
+	return s.NewNode(graph.AsProperties(graph.PropertyMap{
+		common.Name:                      name,
+		common.ObjectID:                  must.NewUUIDv4().String(),
+		ad.DomainSID:                     domainSID,
+		ad.RequiresManagerApproval:       data.RequiresManagerApproval,
+		ad.AuthenticationEnabled:         data.AuthenticationEnabled,
+		ad.SchannelAuthenticationEnabled: data.SchannelAuthenticationEnabled,
+		ad.EnrolleeSuppliesSubject:       data.EnrolleeSuppliesSubject,
+		ad.NoSecurityExtension:           data.NoSecurityExtension,
+		ad.SchemaVersion:                 data.SchemaVersion,
+		ad.AuthorizedSignatures:          data.AuthorizedSignatures,
+		ad.EffectiveEKUs:                 data.EffectiveEKUs,
+		ad.ApplicationPolicies:           data.ApplicationPolicies,
+		ad.SubjectAltRequireUPN:          data.SubjectAltRequireUPN,
+		ad.SubjectAltRequireSPN:          data.SubjectAltRequireSPN,
+		ad.SubjectAltRequireDNS:          data.SubjectAltRequireDNS,
+		ad.SubjectAltRequireDomainDNS:    data.SubjectAltRequireDomainDNS,
+		ad.SubjectAltRequireEmail:        data.SubjectAltRequireEmail,
+		ad.CertificatePolicy:             data.CertificatePolicy,
+	}), ad.Entity, ad.CertTemplate)
+}
+
+func (s *GraphTestContext) NewActiveDirectoryCertTemplateWoutSchannelAuthEnabled(name, domainSID string, data CertTemplateData) *graph.Node {
 	return s.NewNode(graph.AsProperties(graph.PropertyMap{
 		common.Name:                   name,
 		common.ObjectID:               must.NewUUIDv4().String(),
@@ -425,33 +512,50 @@ func (s *GraphTestContext) NewActiveDirectoryCertTemplate(name, domainSID string
 		ad.NoSecurityExtension:        data.NoSecurityExtension,
 		ad.SchemaVersion:              data.SchemaVersion,
 		ad.AuthorizedSignatures:       data.AuthorizedSignatures,
-		ad.EKUs:                       data.EKUS,
+		ad.EffectiveEKUs:              data.EffectiveEKUs,
 		ad.ApplicationPolicies:        data.ApplicationPolicies,
 		ad.SubjectAltRequireUPN:       data.SubjectAltRequireUPN,
 		ad.SubjectAltRequireSPN:       data.SubjectAltRequireSPN,
 		ad.SubjectAltRequireDNS:       data.SubjectAltRequireDNS,
 		ad.SubjectAltRequireDomainDNS: data.SubjectAltRequireDomainDNS,
 		ad.SubjectAltRequireEmail:     data.SubjectAltRequireEmail,
+		ad.CertificatePolicy:          data.CertificatePolicy,
 	}), ad.Entity, ad.CertTemplate)
 }
 
-type CertTemplateData struct {
-	RequiresManagerApproval    bool
-	AuthenticationEnabled      bool
-	EnrolleeSuppliesSubject    bool
-	SubjectAltRequireUPN       bool
-	SubjectAltRequireSPN       bool
-	SubjectAltRequireDNS       bool
-	SubjectAltRequireDomainDNS bool
-	SubjectAltRequireEmail     bool
-	NoSecurityExtension        bool
-	SchemaVersion              float64
-	AuthorizedSignatures       float64
-	EKUS                       []string
-	ApplicationPolicies        []string
+func (s *GraphTestContext) NewActiveDirectoryIssuancePolicy(name, domainSID string, certTemplateOID string) *graph.Node {
+	return s.NewNode(graph.AsProperties(graph.PropertyMap{
+		common.Name:        name,
+		common.ObjectID:    must.NewUUIDv4().String(),
+		ad.DomainSID:       domainSID,
+		ad.CertTemplateOID: certTemplateOID,
+	}), ad.Entity, ad.IssuancePolicy)
 }
 
-func (s *GraphTestContext) setupAzure() {
+type CertTemplateData struct {
+	RequiresManagerApproval       bool
+	AuthenticationEnabled         bool
+	SchannelAuthenticationEnabled bool
+	EnrolleeSuppliesSubject       bool
+	SubjectAltRequireUPN          bool
+	SubjectAltRequireSPN          bool
+	SubjectAltRequireDNS          bool
+	SubjectAltRequireDomainDNS    bool
+	SubjectAltRequireEmail        bool
+	NoSecurityExtension           bool
+	SchemaVersion                 float64
+	AuthorizedSignatures          float64
+	EffectiveEKUs                 []string
+	ApplicationPolicies           []string
+	CertificatePolicy             []string
+}
+
+func (s *GraphTestContext) SetupAzureAndActiveDirectory() {
+	s.SetupAzure()
+	s.SetupActiveDirectory()
+}
+
+func (s *GraphTestContext) SetupAzure() {
 	s.Harness.AZBaseHarness.Setup(s)
 	s.Harness.AZGroupMembership.Setup(s)
 	s.Harness.AZEntityPanelHarness.Setup(s)
@@ -466,7 +570,7 @@ func (s *GraphTestContext) setupAzure() {
 	s.Harness.AZManagementGroup.Setup(s)
 }
 
-func (s *GraphTestContext) setupActiveDirectory() {
+func (s *GraphTestContext) SetupActiveDirectory() {
 	// startServer a host of Tier Zero tagged assets
 	s.Harness.RootADHarness.Setup(s)
 
@@ -477,13 +581,13 @@ func (s *GraphTestContext) setupActiveDirectory() {
 	s.Harness.RDP.Setup(s)
 	s.Harness.RDPB.Setup(s)
 
-	//startServer Session Harness
+	// startServer Session Harness
 	s.Harness.Session.Setup(s)
 
-	//startServer localgroup harness
+	// startServer localgroup harness
 	s.Harness.LocalGroupSQL.Setup(s)
 
-	//startServer control harnesses
+	// startServer control harnesses
 	s.Harness.OutboundControl.Setup(s)
 	s.Harness.InboundControl.Setup(s)
 
@@ -491,7 +595,6 @@ func (s *GraphTestContext) setupActiveDirectory() {
 	s.Harness.MembershipHarness.Setup(s)
 	s.Harness.ForeignHarness.Setup(s)
 	s.Harness.TrustDCSync.Setup(s)
-	s.Harness.Completeness.Setup(s)
 	s.Harness.ShortcutHarness.Setup(s)
 
 	s.Harness.AssetGroupComboNodeHarness.Setup(s)

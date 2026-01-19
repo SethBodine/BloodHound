@@ -14,15 +14,16 @@
 //
 // SPDX-License-Identifier: Apache-2.0
 
-import { combineReducers, configureStore } from '@reduxjs/toolkit';
+import { combineReducers, configureStore, PreloadedState } from '@reduxjs/toolkit';
+import { edgeinfo } from 'bh-shared-ui';
 import { enableMapSet } from 'immer';
 import Cookies from 'js-cookie';
 import throttle from 'lodash/throttle';
 import { TypedUseSelectorHook, useDispatch, useSelector } from 'react-redux';
 import createSagaMiddleware from 'redux-saga';
 import * as reducers from 'src/ducks';
-import { edgeinfo, searchReducer as search } from 'bh-shared-ui';
 import rootSaga from 'src/rootSaga';
+import { GlobalViewState } from './ducks/global/types';
 
 enableMapSet();
 
@@ -31,25 +32,26 @@ const sagaMiddleware = createSagaMiddleware();
 const appReducer = combineReducers({
     ...reducers,
     edgeinfo,
-    search,
 });
 
-export const rootReducer = (state: any, action: any) => {
+export type RootState = ReturnType<typeof appReducer>;
+
+export const rootReducer = (state: any, action: any): RootState => {
     // If the user logs out, clear the redux store to prevent data leakage
     // Adapted from https://stackoverflow.com/questions/35622588/how-to-reset-the-state-of-a-redux-store
     if (action.type === 'auth/logout/fulfilled' || action.type === 'auth/logout/rejected') {
-        const { auth } = state;
-        state = { auth };
+        const { auth, global } = state;
+        state = { auth, global };
         return appReducer(state, action);
     }
-
     // Otherwise, return the current state
     return appReducer(state, action);
 };
 
-const loadState = () => {
+const loadState = (): PreloadedState<RootState> => {
     try {
         const serializedState = localStorage.getItem('persistedState');
+
         if (serializedState === null) {
             return {};
         }
@@ -59,7 +61,21 @@ const loadState = () => {
     }
 };
 
-const saveState = (state: any) => {
+type PersistedState = {
+    auth: { sessionToken: string | null };
+    global: {
+        view: {
+            darkMode: GlobalViewState['darkMode'];
+            autoRunQueries: GlobalViewState['autoRunQueries'];
+            notifications: GlobalViewState['notifications'];
+            exploreLayout: GlobalViewState['exploreLayout'];
+            selectedExploreTableColumns: GlobalViewState['selectedExploreTableColumns'];
+            isExploreTableSelected: GlobalViewState['isExploreTableSelected'];
+        };
+    };
+};
+
+const saveState = (state: PersistedState) => {
     try {
         const serializedState = JSON.stringify(state);
         localStorage.setItem('persistedState', serializedState);
@@ -77,19 +93,34 @@ if (SAMLToken !== undefined) {
     Cookies.remove('token');
 }
 
-export const store = configureStore({
-    reducer: rootReducer,
-    preloadedState: initialState,
-    middleware: (getDefaultMiddleware) => {
-        return [...getDefaultMiddleware({ serializableCheck: false }), sagaMiddleware];
-    },
-});
+const initStore = (preloadedState: PreloadedState<RootState>) => {
+    return configureStore({
+        reducer: rootReducer,
+        preloadedState: preloadedState,
+        middleware: (getDefaultMiddleware) => {
+            return [...getDefaultMiddleware({ serializableCheck: false }), sagaMiddleware];
+        },
+    });
+};
+
+export const store = initStore(initialState);
 
 // Persist the session token in local storage
 store.subscribe(
     throttle(() => {
+        const state = store.getState();
         saveState({
-            auth: { sessionToken: store.getState().auth.sessionToken },
+            auth: { sessionToken: state.auth.sessionToken },
+            global: {
+                view: {
+                    darkMode: state.global.view.darkMode,
+                    autoRunQueries: state.global.view.autoRunQueries,
+                    notifications: [],
+                    exploreLayout: state.global.view.exploreLayout,
+                    selectedExploreTableColumns: state.global.view.selectedExploreTableColumns,
+                    isExploreTableSelected: state.global.view.isExploreTableSelected,
+                },
+            },
         });
     }, 1000)
 );

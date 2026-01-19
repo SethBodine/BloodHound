@@ -18,18 +18,57 @@ package queries
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"testing"
 	"time"
 
-	"github.com/specterops/bloodhound/cache"
-	"github.com/specterops/bloodhound/dawgs/graph"
-	graph_mocks "github.com/specterops/bloodhound/dawgs/graph/mocks"
-	"github.com/specterops/bloodhound/errors"
-	"github.com/specterops/bloodhound/src/model"
+	"github.com/specterops/bloodhound/cmd/api/src/model"
+	graph_mocks "github.com/specterops/bloodhound/cmd/api/src/vendormocks/dawgs/graph"
+	"github.com/specterops/bloodhound/packages/go/cache"
+	"github.com/specterops/bloodhound/packages/go/graphschema"
+	"github.com/specterops/bloodhound/packages/go/graphschema/ad"
+	"github.com/specterops/bloodhound/packages/go/graphschema/azure"
+	"github.com/specterops/bloodhound/packages/go/graphschema/common"
+	"github.com/specterops/dawgs/graph"
 	"github.com/stretchr/testify/require"
 	"go.uber.org/mock/gomock"
 )
+
+func Test_ApplyTimeoutReduction(t *testing.T) {
+	// Query Weight			Reduction Factor 		  Runtime
+	// 	0-4						1						x
+	// 	5-9						2						x/2
+	//	10-14					3						x/3
+	//	15-19					4						x/4
+	//	20-24					5						x/5
+	//	25-29					6						x/6
+	//	30-34					7						x/7
+	//	35-39					8						x/8
+	//	40-44					9						x/9
+	//	45-49					10						x/10
+	// 	50						11						x/11
+	//	>50						Too complex
+
+	var (
+		inputRuntime      = 15 * time.Minute
+		expectedReduction int64
+	)
+
+	// Start with weight of 2, increase by 5 in each iteration until reduction factor = 11
+	// This will run the function and assess the results for each range of permissible query
+	// weights, against their respective expected reduction factor and runtime.
+	weight := int64(2)
+	for expectedReduction = 1; expectedReduction < 12; expectedReduction++ {
+		expectedRuntime := int64(inputRuntime.Seconds()) / expectedReduction
+		reducedRuntime, reduction := applyTimeoutReduction(weight, inputRuntime)
+
+		require.Equal(t, expectedReduction, reduction)
+		require.Equal(t, expectedRuntime, int64(reducedRuntime.Seconds()))
+
+		weight += 5
+	}
+}
 
 const cacheKey = "ad-entity-query_queryName_objectID_1"
 
@@ -142,21 +181,23 @@ func Test_cacheQueryResult(t *testing.T) {
 
 func Test_formatSearchResults_sorting(t *testing.T) {
 	var (
-		exactMatches = []model.SearchResult{
-			{Name: "b@c.com"},
-		}
-		fuzzyMatches = []model.SearchResult{
-			{Name: "bab@c.com"},
-			{Name: "ab@c.com"},
+		matches = NodeSearchResults{
+			ExactResults: []model.SearchResult{
+				{Name: "b@c.com"},
+			},
+			FuzzyResults: []model.SearchResult{
+				{Name: "bab@c.com"},
+				{Name: "ab@c.com"},
+			},
 		}
 		skip     = 0
 		limit    = 10
 		expected = []model.SearchResult{
-			exactMatches[0], fuzzyMatches[1], fuzzyMatches[0], // manually put fuzzyMatches' elements in alphabetical order for assertion
+			matches.ExactResults[0], matches.FuzzyResults[1], matches.FuzzyResults[0], // manually put fuzzyMatches' elements in alphabetical order for assertion
 		}
 	)
 
-	actual := formatSearchResults(exactMatches, fuzzyMatches, limit, skip)
+	actual := formatSearchResults(matches, limit, skip)
 
 	require.Equal(t, 3, len(actual))
 	require.Equal(t, actual, expected)
@@ -164,26 +205,28 @@ func Test_formatSearchResults_sorting(t *testing.T) {
 
 func Test_formatSearchResults_limit(t *testing.T) {
 	var (
-		exactMatches = []model.SearchResult{
-			{Name: "b@c.com"},
-			{Name: "b@c.com"},
-			{Name: "b@c.com"},
-		}
-		fuzzyMatches = []model.SearchResult{
-			{Name: "ab@c.com"},
+		matches = NodeSearchResults{
+			ExactResults: []model.SearchResult{
+				{Name: "b@c.com"},
+				{Name: "b@c.com"},
+				{Name: "b@c.com"},
+			},
+			FuzzyResults: []model.SearchResult{
+				{Name: "ab@c.com"},
+			},
 		}
 		skip     = 0
 		limit    = 3
-		expected = exactMatches
+		expected = matches.ExactResults
 	)
 
-	actual := formatSearchResults(exactMatches, fuzzyMatches, limit, skip)
+	actual := formatSearchResults(matches, limit, skip)
 
 	require.Equal(t, 3, len(actual))
 	require.Equal(t, actual, expected)
 }
 
-func Test_nodesToSearchResult(t *testing.T) {
+func Test_filterNodesToSearchResult(t *testing.T) {
 	var (
 		inputNodeProps = graph.NewProperties().
 				Set("name", "this is a name").
@@ -195,7 +238,8 @@ func Test_nodesToSearchResult(t *testing.T) {
 		}
 	)
 
-	actual := nodesToSearchResult(input...)
+	actual, err := filterNodesToSearchResult(false, nil, input...)
+	require.Nil(t, err)
 
 	expectedName, _ := inputNodeProps.Get("name").String()
 	expectedObjectId, _ := inputNodeProps.Get("objectid").String()
@@ -207,20 +251,174 @@ func Test_nodesToSearchResult(t *testing.T) {
 	require.Equal(t, expectedDistinguishedName, "ze most distinguished")
 }
 
-func Test_nodesToSearchResult_default(t *testing.T) {
+func Test_filterNodesToSearchResult_default(t *testing.T) {
 	var (
 		input = []*graph.Node{
 			{Properties: graph.NewProperties()},
 		}
-		expectedName              = "NO NAME"
-		expectedObjectId          = "NO OBJECT ID"
+		expectedName              = graphschema.DefaultMissingName
+		expectedObjectId          = graphschema.DefaultMissingObjectId
 		expectedDistinguishedName = ""
 	)
 
-	actual := nodesToSearchResult(input...)
+	actual, err := filterNodesToSearchResult(false, nil, input...)
+	require.Nil(t, err)
 
 	require.Equal(t, 1, len(actual))
 	require.Equal(t, expectedName, actual[0].Name)
 	require.Equal(t, expectedObjectId, actual[0].ObjectID)
 	require.Equal(t, expectedDistinguishedName, actual[0].DistinguishedName)
+}
+
+func Test_filterNodesToSearchResult_includeOpenGraphNodes(t *testing.T) {
+	var (
+		customKind     = "CustomKind"
+		inputNodeProps = graph.NewProperties().
+				Set("name", "this is a name").
+				Set("objectid", "object id")
+		input = []*graph.Node{
+			{Kinds: []graph.Kind{graph.StringKind(customKind)},
+				Properties: inputNodeProps},
+		}
+	)
+
+	actual, err := filterNodesToSearchResult(true, nil, input...)
+	require.Nil(t, err)
+
+	require.Equal(t, 1, len(actual))
+	require.Equal(t, customKind, actual[0].Type)
+}
+
+func Test_filterNodesToSearchResult_filterEnvironments(t *testing.T) {
+	var (
+		inputNodeProp1 = graph.Node{
+			ID:    1,
+			Kinds: graph.Kinds{ad.Entity, ad.Domain},
+			Properties: &graph.Properties{
+				Map: map[string]any{common.ObjectID.String(): "objectid1", common.Name.String(): "name1", ad.DomainSID.String(): "12345"},
+			},
+		}
+		inputNodeProp2 = graph.Node{
+			ID:    2,
+			Kinds: graph.Kinds{ad.Entity, ad.Domain},
+			Properties: &graph.Properties{
+				Map: map[string]any{common.ObjectID.String(): "objectid2", common.Name.String(): "name2", ad.DomainSID.String(): "54321"},
+			},
+		}
+		inputNodeProp3 = graph.Node{
+			ID:    3,
+			Kinds: graph.Kinds{azure.Entity, azure.Tenant},
+			Properties: &graph.Properties{
+				Map: map[string]any{common.ObjectID.String(): "objectid3", common.Name.String(): "name3", azure.TenantID.String(): "azure12345"},
+			},
+		}
+
+		input = []*graph.Node{&inputNodeProp1, &inputNodeProp2, &inputNodeProp3}
+	)
+
+	actual, err := filterNodesToSearchResult(false, []string{"54321"}, input...)
+	require.Nil(t, err)
+
+	expectedName, _ := inputNodeProp2.Properties.Get(common.Name.String()).String()
+	expectedObjectId, _ := inputNodeProp2.Properties.Get(common.ObjectID.String()).String()
+
+	require.Equal(t, 1, len(actual))
+	actualResult := actual[0]
+	require.Equal(t, expectedName, actualResult.Name)
+	require.Equal(t, expectedObjectId, actualResult.ObjectID)
+}
+
+func Test_filterNodesToSearchResult_filterEnvironmentsEmpty(t *testing.T) {
+	var (
+		inputNodeProp1 = graph.Node{
+			ID:    1,
+			Kinds: graph.Kinds{ad.Entity, ad.Domain},
+			Properties: &graph.Properties{
+				Map: map[string]any{common.ObjectID.String(): "objectid1", common.Name.String(): "name1", ad.DomainSID.String(): "12345"},
+			},
+		}
+		inputNodeProp2 = graph.Node{
+			ID:    2,
+			Kinds: graph.Kinds{ad.Entity, ad.Domain},
+			Properties: &graph.Properties{
+				Map: map[string]any{common.ObjectID.String(): "objectid2", common.Name.String(): "name2", ad.DomainSID.String(): "54321"},
+			},
+		}
+		inputNodeProp3 = graph.Node{
+			ID:    3,
+			Kinds: graph.Kinds{azure.Entity, azure.Tenant},
+			Properties: &graph.Properties{
+				Map: map[string]any{common.ObjectID.String(): "objectid3", common.Name.String(): "name3", azure.TenantID.String(): "azure12345"},
+			},
+		}
+
+		input = []*graph.Node{&inputNodeProp1, &inputNodeProp2, &inputNodeProp3}
+	)
+
+	actual, err := filterNodesToSearchResult(false, []string{}, input...)
+	require.Nil(t, err)
+
+	require.Empty(t, actual)
+}
+
+func Test_filterNodesToSearchResult_filterEnvironments_domainSIDFail(t *testing.T) {
+	var (
+		inputNodeProp1 = graph.Node{
+			ID:    1,
+			Kinds: graph.Kinds{ad.Entity, ad.Domain},
+			Properties: &graph.Properties{
+				Map: map[string]any{common.ObjectID.String(): "objectid1", common.Name.String(): "name1", ad.DomainSID.String(): "12345"},
+			},
+		}
+		inputNodeProp2 = graph.Node{
+			ID:    2,
+			Kinds: graph.Kinds{ad.Entity, ad.Domain},
+			Properties: &graph.Properties{
+				Map: map[string]any{common.ObjectID.String(): "objectid2", common.Name.String(): "name2"},
+			},
+		}
+		inputNodeProp3 = graph.Node{
+			ID:    3,
+			Kinds: graph.Kinds{azure.Entity, azure.Tenant},
+			Properties: &graph.Properties{
+				Map: map[string]any{common.ObjectID.String(): "objectid3", common.Name.String(): "name3", azure.TenantID.String(): "azure12345"},
+			},
+		}
+
+		input = []*graph.Node{&inputNodeProp1, &inputNodeProp2, &inputNodeProp3}
+	)
+
+	_, err := filterNodesToSearchResult(false, []string{"54321"}, input...)
+	require.Contains(t, err.Error(), "error getting domainsid: ")
+}
+
+func Test_filterNodesToSearchResult_filterEnvironments_tenantIDFail(t *testing.T) {
+	var (
+		inputNodeProp1 = graph.Node{
+			ID:    1,
+			Kinds: graph.Kinds{ad.Entity, ad.Domain},
+			Properties: &graph.Properties{
+				Map: map[string]any{common.ObjectID.String(): "objectid1", common.Name.String(): "name1", ad.DomainSID.String(): "12345"},
+			},
+		}
+		inputNodeProp2 = graph.Node{
+			ID:    2,
+			Kinds: graph.Kinds{ad.Entity, ad.Domain},
+			Properties: &graph.Properties{
+				Map: map[string]any{common.ObjectID.String(): "objectid2", common.Name.String(): "name2", ad.DomainSID.String(): "54321"},
+			},
+		}
+		inputNodeProp3 = graph.Node{
+			ID:    3,
+			Kinds: graph.Kinds{azure.Entity, azure.Tenant},
+			Properties: &graph.Properties{
+				Map: map[string]any{common.ObjectID.String(): "objectid3", common.Name.String(): "name3"},
+			},
+		}
+
+		input = []*graph.Node{&inputNodeProp1, &inputNodeProp2, &inputNodeProp3}
+	)
+
+	_, err := filterNodesToSearchResult(false, []string{"azure12345"}, input...)
+	require.Contains(t, err.Error(), "error getting tenantid: ")
 }

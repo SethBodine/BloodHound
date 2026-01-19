@@ -17,7 +17,7 @@
 package auth
 
 import (
-	"github.com/specterops/bloodhound/src/model"
+	"github.com/specterops/bloodhound/cmd/api/src/model"
 )
 
 type PermissionSet struct {
@@ -27,12 +27,15 @@ type PermissionSet struct {
 	APsGenerateReport model.Permission
 	APsManageAPs      model.Permission
 
+	AuditLogRead model.Permission
+
 	AuthAcceptEULA                      model.Permission
 	AuthCreateToken                     model.Permission
 	AuthManageApplicationConfigurations model.Permission
 	AuthManageProviders                 model.Permission
 	AuthManageSelf                      model.Permission
 	AuthManageUsers                     model.Permission
+	AuthReadUsers                       model.Permission
 
 	ClientsManage  model.Permission
 	ClientsRead    model.Permission
@@ -40,8 +43,10 @@ type PermissionSet struct {
 
 	CollectionManageJobs model.Permission
 
-	GraphDBRead  model.Permission
-	GraphDBWrite model.Permission
+	GraphDBIngest model.Permission
+	GraphDBMutate model.Permission
+	GraphDBRead   model.Permission
+	GraphDBWrite  model.Permission
 
 	SavedQueriesRead  model.Permission
 	SavedQueriesWrite model.Permission
@@ -55,6 +60,7 @@ func (s PermissionSet) All() model.Permissions {
 		s.AppWriteApplicationConfiguration,
 		s.APsGenerateReport,
 		s.APsManageAPs,
+		s.AuditLogRead,
 		s.AuthCreateToken,
 		s.AuthManageApplicationConfigurations,
 		s.AuthManageProviders,
@@ -64,14 +70,18 @@ func (s PermissionSet) All() model.Permissions {
 		s.ClientsRead,
 		s.ClientsTasking,
 		s.CollectionManageJobs,
+		s.GraphDBIngest,
+		s.GraphDBMutate,
 		s.GraphDBRead,
 		s.GraphDBWrite,
 		s.SavedQueriesRead,
 		s.SavedQueriesWrite,
+		s.AuthReadUsers,
 		s.WipeDB,
 	}
 }
 
+// Permissions Note: Not the only source of truth, changes here must be added to a migration *.sql file to update the permissions table
 func Permissions() PermissionSet {
 	return PermissionSet{
 		AppReadApplicationConfiguration:  model.NewPermission("app", "ReadAppConfig"),
@@ -80,12 +90,15 @@ func Permissions() PermissionSet {
 		APsGenerateReport: model.NewPermission("risks", "GenerateReport"),
 		APsManageAPs:      model.NewPermission("risks", "ManageRisks"),
 
+		AuditLogRead: model.NewPermission("audit_log", "Read"),
+
 		AuthAcceptEULA:                      model.NewPermission("auth", "AcceptEULA"),
 		AuthCreateToken:                     model.NewPermission("auth", "CreateToken"),
 		AuthManageApplicationConfigurations: model.NewPermission("auth", "ManageAppConfig"),
 		AuthManageProviders:                 model.NewPermission("auth", "ManageProviders"),
 		AuthManageSelf:                      model.NewPermission("auth", "ManageSelf"),
 		AuthManageUsers:                     model.NewPermission("auth", "ManageUsers"),
+		AuthReadUsers:                       model.NewPermission("auth", "ReadUsers"),
 
 		ClientsManage:  model.NewPermission("clients", "Manage"),
 		ClientsRead:    model.NewPermission("clients", "Read"),
@@ -93,8 +106,10 @@ func Permissions() PermissionSet {
 
 		CollectionManageJobs: model.NewPermission("collection", "ManageJobs"),
 
-		GraphDBRead:  model.NewPermission("graphdb", "Read"),
-		GraphDBWrite: model.NewPermission("graphdb", "Write"),
+		GraphDBIngest: model.NewPermission("graphdb", "Ingest"),
+		GraphDBMutate: model.NewPermission("graphdb", "Mutate"),
+		GraphDBRead:   model.NewPermission("graphdb", "Read"),
+		GraphDBWrite:  model.NewPermission("graphdb", "Write"),
 
 		SavedQueriesRead:  model.NewPermission("saved_queries", "Read"),
 		SavedQueriesWrite: model.NewPermission("saved_queries", "Write"),

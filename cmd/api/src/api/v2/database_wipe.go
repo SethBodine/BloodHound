@@ -19,19 +19,23 @@ package v2
 import (
 	"context"
 	"fmt"
+	"log/slog"
 	"net/http"
+	"slices"
 	"strings"
 
-	"github.com/gofrs/uuid"
-	"github.com/specterops/bloodhound/dawgs/graph"
-	"github.com/specterops/bloodhound/dawgs/ops"
-	"github.com/specterops/bloodhound/log"
-	"github.com/specterops/bloodhound/src/api"
-	"github.com/specterops/bloodhound/src/model"
+	"github.com/specterops/bloodhound/cmd/api/src/api"
+	"github.com/specterops/bloodhound/cmd/api/src/auth"
+	"github.com/specterops/bloodhound/cmd/api/src/ctx"
+	"github.com/specterops/bloodhound/cmd/api/src/model"
+	"github.com/specterops/bloodhound/cmd/api/src/model/appcfg"
+	"github.com/specterops/dawgs/graph"
 )
 
 type DatabaseWipe struct {
-	DeleteCollectedGraphData  bool  `json:"deleteCollectedGraphData"`
+	DeleteCollectedGraphData bool  `json:"deleteCollectedGraphData"`
+	DeleteSourceKinds        []int `json:"deleteSourceKinds"` // an id of 0 represents "sourceless" data
+
 	DeleteFileIngestHistory   bool  `json:"deleteFileIngestHistory"`
 	DeleteDataQualityHistory  bool  `json:"deleteDataQualityHistory"`
 	DeleteAssetGroupSelectors []int `json:"deleteAssetGroupSelectors"`
@@ -41,10 +45,12 @@ func (s Resources) HandleDatabaseWipe(response http.ResponseWriter, request *htt
 
 	var (
 		payload DatabaseWipe
+		err     error
 		// use this struct to flag any fields that failed to delete
 		errors []string
 		// deleting collected graph data OR high value selectors starts analsyis
 		kickoffAnalysis bool
+		auditEntry      model.AuditEntry
 	)
 
 	if err := api.ReadJSONRequestPayloadLimited(&payload, request); err != nil {
@@ -57,7 +63,8 @@ func (s Resources) HandleDatabaseWipe(response http.ResponseWriter, request *htt
 	}
 
 	// return `BadRequest` if request is empty
-	if !payload.DeleteCollectedGraphData && !payload.DeleteDataQualityHistory && !payload.DeleteFileIngestHistory && len(payload.DeleteAssetGroupSelectors) == 0 {
+	isEmptyRequest := !payload.DeleteCollectedGraphData && !payload.DeleteDataQualityHistory && !payload.DeleteFileIngestHistory && len(payload.DeleteAssetGroupSelectors) == 0 && len(payload.DeleteSourceKinds) == 0
+	if isEmptyRequest {
 		api.WriteErrorResponse(
 			request.Context(),
 			api.BuildErrorResponse(http.StatusBadRequest, "please select something to delete", request),
@@ -66,27 +73,33 @@ func (s Resources) HandleDatabaseWipe(response http.ResponseWriter, request *htt
 		return
 	}
 
-	commitID, err := uuid.NewV4()
-	if err != nil {
+	isMixedDeleteRequest := payload.DeleteCollectedGraphData && len(payload.DeleteSourceKinds) > 0
+	if isMixedDeleteRequest {
 		api.WriteErrorResponse(
 			request.Context(),
-			api.BuildErrorResponse(http.StatusInternalServerError, fmt.Sprintf("failure generating uuid: %v", err.Error()), request),
+			api.BuildErrorResponse(http.StatusBadRequest, "request may only specify either deleteCollectedGraphData or deleteSourceKinds, not both", request),
 			response,
 		)
 		return
 	}
 
-	auditEntry := &model.AuditEntry{
-		Action: model.AuditLogActionDeleteBloodhoundData,
-		Model: &model.AuditData{
+	if auditEntry, err = model.NewAuditEntry(
+		model.AuditLogActionDeleteBloodhoundData,
+		model.AuditLogStatusIntent,
+		model.AuditData{
 			"options": payload,
 		},
-		Status:   model.AuditLogStatusIntent,
-		CommitID: commitID,
+	); err != nil {
+		api.WriteErrorResponse(
+			request.Context(),
+			api.BuildErrorResponse(http.StatusInternalServerError, api.ErrorResponseDetailsInternalServerError, request),
+			response,
+		)
+		return
 	}
 
 	// create an intent audit log
-	if err := s.DB.AppendAuditLog(request.Context(), *auditEntry); err != nil {
+	if err := s.DB.AppendAuditLog(request.Context(), auditEntry); err != nil {
 		api.WriteErrorResponse(
 			request.Context(),
 			api.BuildErrorResponse(http.StatusInternalServerError, "failure creating an intent audit log", request),
@@ -95,18 +108,50 @@ func (s Resources) HandleDatabaseWipe(response http.ResponseWriter, request *htt
 		return
 	}
 
-	// delete graph
-	if payload.DeleteCollectedGraphData {
-		if failed := s.deleteCollectedGraphData(request.Context(), auditEntry); failed {
-			errors = append(errors, "collected graph data")
+	deleteGraph := payload.DeleteCollectedGraphData || len(payload.DeleteSourceKinds) > 0
+	if deleteGraph {
+		if clearGraphDataFlag, err := s.DB.GetFlagByKey(request.Context(), appcfg.FeatureClearGraphData); err != nil {
+			api.WriteErrorResponse(
+				request.Context(),
+				api.BuildErrorResponse(http.StatusInternalServerError, "unable to inspect the feature flag for clearing graph data", request),
+				response,
+			)
+			return
+		} else if !clearGraphDataFlag.Enabled {
+			api.WriteErrorResponse(
+				request.Context(),
+				api.BuildErrorResponse(http.StatusBadRequest, "deleting graph data is currently disabled", request),
+				response,
+			)
+			return
 		} else {
-			kickoffAnalysis = true
+			var userId string
+			if user, isUser := auth.GetUserFromAuthCtx(ctx.FromRequest(request).AuthCtx); !isUser {
+				slog.WarnContext(request.Context(), "Encountered request analysis for unknown user, this shouldn't happen")
+				userId = "unknown-user-database-wipe"
+			} else {
+				userId = user.ID.String()
+			}
+
+			if deleteRequest, err := s.BuildDeleteRequest(request.Context(), userId, payload); err != nil {
+				api.WriteErrorResponse(
+					request.Context(),
+					api.BuildErrorResponse(http.StatusBadRequest, fmt.Sprintf("failure building delete request: %s", err.Error()), request),
+					response,
+				)
+			} else if err := s.DB.RequestCollectedGraphDataDeletion(request.Context(), deleteRequest); err != nil {
+				api.HandleDatabaseError(request, response, err)
+				return
+			}
+
+			s.handleAuditLogForDatabaseWipe(request.Context(), &auditEntry, true, "collected graph data")
 		}
+
 	}
 
 	// delete asset group selectors
 	if len(payload.DeleteAssetGroupSelectors) > 0 {
-		if failed := s.deleteHighValueSelectors(request.Context(), auditEntry, payload.DeleteAssetGroupSelectors); failed {
+		if failed := s.deleteHighValueSelectors(request.Context(), &auditEntry, payload.DeleteAssetGroupSelectors); failed {
 			errors = append(errors, "custom high value selectors")
 		} else {
 			kickoffAnalysis = true
@@ -115,24 +160,35 @@ func (s Resources) HandleDatabaseWipe(response http.ResponseWriter, request *htt
 
 	// if deleting `nodes` or deleting `asset group selectors` is successful, kickoff an analysis
 	if kickoffAnalysis {
-		s.TaskNotifier.RequestAnalysis()
+		var userId string
+		if user, isUser := auth.GetUserFromAuthCtx(ctx.FromRequest(request).AuthCtx); !isUser {
+			slog.WarnContext(request.Context(), "Encountered request analysis for unknown user, this shouldn't happen")
+			userId = "unknown-user-database-wipe"
+		} else {
+			userId = user.ID.String()
+		}
+
+		if err := s.DB.RequestAnalysis(request.Context(), userId); err != nil {
+			api.HandleDatabaseError(request, response, err)
+			return
+		}
 	}
 
 	// delete file ingest history
 	if payload.DeleteFileIngestHistory {
-		if failure := s.deleteFileIngestHistory(request.Context(), auditEntry); failure {
+		if failure := s.deleteFileIngestHistory(request.Context(), &auditEntry); failure {
 			errors = append(errors, "file ingest history")
 		}
 	}
 
 	// delete data quality history
 	if payload.DeleteDataQualityHistory {
-		if failure := s.deleteDataQualityHistory(request.Context(), auditEntry); failure {
+		if failure := s.deleteDataQualityHistory(request.Context(), &auditEntry); failure {
 			errors = append(errors, "data quality history")
 		}
 	}
 
-	// return a user friendly error message indicating what operations failed
+	// return a user-friendly error message indicating what operations failed
 	if len(errors) > 0 {
 		api.WriteErrorResponse(
 			request.Context(),
@@ -146,43 +202,10 @@ func (s Resources) HandleDatabaseWipe(response http.ResponseWriter, request *htt
 
 }
 
-func (s Resources) deleteCollectedGraphData(ctx context.Context, auditEntry *model.AuditEntry) (failure bool) {
-	var nodeIDs []graph.ID
-
-	if err := s.Graph.ReadTransaction(ctx,
-		func(tx graph.Transaction) error {
-			fetchedNodeIDs, err := ops.FetchNodeIDs(tx.Nodes())
-
-			nodeIDs = append(nodeIDs, fetchedNodeIDs...)
-			return err
-		},
-	); err != nil {
-		log.Errorf("%s: %s", "error fetching all nodes", err.Error())
-		s.handleAuditLogForDatabaseWipe(ctx, auditEntry, false, "collected graph data")
-		return true
-	} else if err := s.Graph.BatchOperation(ctx, func(batch graph.Batch) error {
-		for _, nodeId := range nodeIDs {
-			// deleting a node also deletes all of its edges due to a sql trigger
-			if err := batch.DeleteNode(nodeId); err != nil {
-				return err
-			}
-		}
-		return nil
-	}); err != nil {
-		log.Errorf("%s: %s", "error deleting all nodes", err.Error())
-		s.handleAuditLogForDatabaseWipe(ctx, auditEntry, false, "collected graph data")
-		return true
-	} else {
-		// if successful, handle audit log and kick off analysis
-		s.handleAuditLogForDatabaseWipe(ctx, auditEntry, true, "collected graph data")
-		return false
-	}
-}
-
 func (s Resources) deleteHighValueSelectors(ctx context.Context, auditEntry *model.AuditEntry, assetGroupIDs []int) (failure bool) {
 
 	if err := s.DB.DeleteAssetGroupSelectorsForAssetGroups(ctx, assetGroupIDs); err != nil {
-		log.Errorf("%s: %s", "there was an error deleting asset group selectors ", err.Error())
+		slog.ErrorContext(ctx, fmt.Sprintf("%s: %s", "there was an error deleting asset group selectors ", err.Error()))
 		s.handleAuditLogForDatabaseWipe(ctx, auditEntry, false, "high value selectors")
 		return true
 	} else {
@@ -193,8 +216,8 @@ func (s Resources) deleteHighValueSelectors(ctx context.Context, auditEntry *mod
 }
 
 func (s Resources) deleteFileIngestHistory(ctx context.Context, auditEntry *model.AuditEntry) (failure bool) {
-	if err := s.DB.DeleteAllFileUploads(ctx); err != nil {
-		log.Errorf("%s: %s", "there was an error deleting file ingest history", err.Error())
+	if err := s.DB.DeleteAllIngestJobs(ctx); err != nil {
+		slog.ErrorContext(ctx, fmt.Sprintf("%s: %s", "there was an error deleting file ingest history", err.Error()))
 		s.handleAuditLogForDatabaseWipe(ctx, auditEntry, false, "file ingest history")
 		return true
 	} else {
@@ -205,7 +228,7 @@ func (s Resources) deleteFileIngestHistory(ctx context.Context, auditEntry *mode
 
 func (s Resources) deleteDataQualityHistory(ctx context.Context, auditEntry *model.AuditEntry) (failure bool) {
 	if err := s.DB.DeleteAllDataQuality(ctx); err != nil {
-		log.Errorf("%s: %s", "there was an error deleting data quality history", err.Error())
+		slog.ErrorContext(ctx, fmt.Sprintf("%s: %s", "there was an error deleting data quality history", err.Error()))
 		s.handleAuditLogForDatabaseWipe(ctx, auditEntry, false, "data quality history")
 		return true
 	} else {
@@ -218,7 +241,7 @@ func (s Resources) handleAuditLogForDatabaseWipe(ctx context.Context, auditEntry
 	if success {
 		auditEntry.Status = model.AuditLogStatusSuccess
 		auditEntry.Model = model.AuditData{
-			"delete_successful": msg,
+			"delete_request_successful": msg,
 		}
 	} else {
 		auditEntry.Status = model.AuditLogStatusFailure
@@ -228,6 +251,65 @@ func (s Resources) handleAuditLogForDatabaseWipe(ctx context.Context, auditEntry
 	}
 
 	if err := s.DB.AppendAuditLog(ctx, *auditEntry); err != nil {
-		log.Errorf("%s: %s", "error writing to audit log", err.Error())
+		slog.ErrorContext(ctx, fmt.Sprintf("%s: %s", "error writing to audit log", err.Error()))
 	}
+}
+
+func (s Resources) BuildDeleteRequest(ctx context.Context, userID string, payload DatabaseWipe) (model.AnalysisRequest, error) {
+	deleteRequest := model.AnalysisRequest{
+		RequestedBy:    userID,
+		RequestType:    model.AnalysisRequestDeletion,
+		DeleteAllGraph: payload.DeleteCollectedGraphData,
+	}
+
+	if slices.Contains(payload.DeleteSourceKinds, 0) {
+		deleteRequest.DeleteSourcelessGraph = true
+	}
+
+	if len(payload.DeleteSourceKinds) > 0 {
+		// Load source kind definitions from DB
+		sourceKinds, err := s.DB.GetSourceKinds(ctx)
+		if err != nil {
+			return deleteRequest, fmt.Errorf("failed to get source kinds: %w", err)
+		}
+
+		// Recover the source kind names from the provided IDs
+		requestedKinds := make(graph.Kinds, 0, len(payload.DeleteSourceKinds))
+		for _, id := range payload.DeleteSourceKinds {
+			found := false
+			for _, sk := range sourceKinds {
+				if sk.ID == id {
+					requestedKinds = append(requestedKinds, sk.Name)
+					found = true
+					break
+				}
+			}
+			if !found && id != 0 { // id of 0 is our internal convention meaning "sourceless". this is not an error case
+				return deleteRequest, fmt.Errorf("requested source kind id %d not found", id)
+			}
+		}
+
+		// Validate that all requested kinds are legitimate
+		validKinds, err := s.Graph.FetchKinds(ctx)
+		if err != nil {
+			return deleteRequest, fmt.Errorf("failed to fetch valid kinds: %w", err)
+		}
+
+		// Create a fast lookup map for validation
+		validSet := make(map[graph.Kind]struct{}, len(validKinds))
+		for _, k := range validKinds {
+			validSet[k] = struct{}{}
+		}
+
+		for _, rk := range requestedKinds {
+			if _, ok := validSet[rk]; !ok {
+				return deleteRequest, fmt.Errorf("requested source kind %q is not a valid kind", rk)
+			}
+		}
+
+		// All kinds are valid
+		deleteRequest.DeleteSourceKinds = requestedKinds.Strings()
+	}
+
+	return deleteRequest, nil
 }

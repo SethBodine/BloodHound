@@ -14,26 +14,26 @@
 //
 // SPDX-License-Identifier: Apache-2.0
 
+import { Box, Link } from '@mui/material';
 import { FC } from 'react';
-import { Link, Box } from '@mui/material';
 
 const References: FC = () => {
     return (
-        <Box sx={{ overflowX: 'auto' }}>
-            <Link target='_blank' rel='noopener' href='https://attack.mitre.org/techniques/T1098/'>
+        <Box className='overflow-x-auto'>
+            <Link target='_blank' rel='noopener noreferrer' href='https://attack.mitre.org/techniques/T1098/'>
                 ATT&amp;CK T1098: Account Manipulation
             </Link>
             <br />
             <Link
                 target='_blank'
-                rel='noopener'
+                rel='noopener noreferrer'
                 href='https://posts.specterops.io/azure-privilege-escalation-via-service-principal-abuse-210ae2be2a5'>
                 Andy Robbins - Azure Privilege Escalation via Service Principal Abuse
             </Link>
             <br />
             <Link
                 target='_blank'
-                rel='noopener'
+                rel='noopener noreferrer'
                 href='https://docs.microsoft.com/en-us/azure/active-directory/roles/assign-roles-different-scopes'>
                 Assign Azure AD roles at different scopes
             </Link>

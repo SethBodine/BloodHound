@@ -26,21 +26,21 @@ import (
 	"reflect"
 	"testing"
 
-	"github.com/specterops/bloodhound/src/database/mocks"
+	"github.com/specterops/bloodhound/cmd/api/src/database/mocks"
 
-	"github.com/specterops/bloodhound/headers"
-	"github.com/specterops/bloodhound/mediatypes"
+	"github.com/specterops/bloodhound/packages/go/headers"
+	"github.com/specterops/bloodhound/packages/go/mediatypes"
 
 	"github.com/gorilla/mux"
 	"github.com/stretchr/testify/require"
 	"go.uber.org/mock/gomock"
 
-	"github.com/specterops/bloodhound/src/api"
-	api_mocks "github.com/specterops/bloodhound/src/api/mocks"
-	"github.com/specterops/bloodhound/src/auth"
-	"github.com/specterops/bloodhound/src/config"
-	"github.com/specterops/bloodhound/src/ctx"
-	"github.com/specterops/bloodhound/src/model"
+	"github.com/specterops/bloodhound/cmd/api/src/api"
+	api_mocks "github.com/specterops/bloodhound/cmd/api/src/api/mocks"
+	"github.com/specterops/bloodhound/cmd/api/src/auth"
+	"github.com/specterops/bloodhound/cmd/api/src/config"
+	"github.com/specterops/bloodhound/cmd/api/src/ctx"
+	"github.com/specterops/bloodhound/cmd/api/src/model"
 )
 
 func TestLoginFailure(t *testing.T) {
@@ -84,7 +84,7 @@ func TestLoginFailure(t *testing.T) {
 	}
 
 	mockAuthenticator := api_mocks.NewMockAuthenticator(mockCtrl)
-	mockAuthenticator.EXPECT().LoginWithSecret(gomock.Any(), req1).Return(api.LoginDetails{User: model.User{EULAAccepted: true}}, auth.ErrorInvalidOTP)
+	mockAuthenticator.EXPECT().LoginWithSecret(gomock.Any(), req1).Return(api.LoginDetails{User: model.User{EULAAccepted: true}}, auth.ErrInvalidOTP)
 	mockAuthenticator.EXPECT().LoginWithSecret(gomock.Any(), req2).Return(api.LoginDetails{User: model.User{EULAAccepted: true}}, api.ErrInvalidAuth)
 	mockAuthenticator.EXPECT().LoginWithSecret(gomock.Any(), req3).Return(api.LoginDetails{User: model.User{EULAAccepted: true}}, fmt.Errorf("db error"))
 	mockAuthenticator.EXPECT().LoginWithSecret(gomock.Any(), req4).Return(api.LoginDetails{User: model.User{EULAAccepted: true}}, api.ErrUserDisabled)

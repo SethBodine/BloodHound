@@ -18,19 +18,21 @@ package middleware
 
 import (
 	"fmt"
+	"log/slog"
+	"math/rand/v2"
 	"net/http"
 	"strings"
 	"time"
 
 	"github.com/gofrs/uuid"
 	"github.com/gorilla/mux"
-	"github.com/specterops/bloodhound/src/ctx"
+	"github.com/specterops/bloodhound/cmd/api/src/ctx"
 
-	"github.com/specterops/bloodhound/src/api"
-	"github.com/specterops/bloodhound/src/auth"
-	"github.com/specterops/bloodhound/src/model"
+	"github.com/specterops/bloodhound/cmd/api/src/api"
+	"github.com/specterops/bloodhound/cmd/api/src/auth"
+	"github.com/specterops/bloodhound/cmd/api/src/model"
 
-	"github.com/specterops/bloodhound/headers"
+	"github.com/specterops/bloodhound/packages/go/headers"
 )
 
 func parseAuthorizationHeader(request *http.Request) (string, string, *api.ErrorWrapper) {
@@ -66,12 +68,13 @@ func AuthMiddleware(authenticator api.Authenticator) mux.MiddlewareFunc {
 			} else {
 				switch authScheme {
 				case api.AuthorizationSchemeBearer:
-					if userAuth, err := authenticator.ValidateSession(request.Context(), schemeParameter); err != nil {
-						api.WriteErrorResponse(request.Context(), api.BuildErrorResponse(http.StatusUnauthorized, api.ErrorResponseDetailsAuthenticationInvalid, request), response)
+					if authContext, err := authenticator.ValidateBearerToken(request.Context(), schemeParameter); err != nil {
+						slog.ErrorContext(request.Context(), fmt.Sprintf("Error while authenticating bearer token in AuthMiddleware: %v", err))
+						api.WriteErrorResponse(request.Context(), api.BuildErrorResponse(http.StatusUnauthorized, "Token Authorization failed.", request), response)
 						return
 					} else {
 						bhCtx := ctx.Get(request.Context())
-						bhCtx.AuthCtx = userAuth
+						bhCtx.AuthCtx = authContext
 					}
 
 				case api.AuthorizationSchemeBHESignature:
@@ -194,6 +197,29 @@ func AuthorizeAuthManagementAccess(permissions auth.PermissionSet, authorizer au
 				} else {
 					next.ServeHTTP(response, request)
 				}
+			}
+		})
+	}
+}
+
+const (
+	loginMinimum   = time.Second + 500*time.Millisecond
+	loginVariation = 500 * time.Millisecond
+)
+
+// LoginTimer is a middleware to protect against time-based user enumeration on the Login route. It does this by
+// starting a timer before the actual login procedure to normalize the duration of this procedure to be within 1.5s and
+// 2s.
+func LoginTimer() mux.MiddlewareFunc {
+	return func(next http.Handler) http.Handler {
+		return http.HandlerFunc(func(response http.ResponseWriter, request *http.Request) {
+			timer := time.NewTimer(loginMinimum + time.Duration(rand.Int64N(loginVariation.Nanoseconds())))
+
+			next.ServeHTTP(response, request)
+
+			select {
+			case <-timer.C:
+			case <-request.Context().Done():
 			}
 		})
 	}

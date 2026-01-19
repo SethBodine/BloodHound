@@ -13,6 +13,9 @@
 // limitations under the License.
 //
 // SPDX-License-Identifier: Apache-2.0
+import { BaseGraphLayoutOptions, Notification } from 'bh-shared-ui';
+import { Environment } from 'js-client-library';
+import { SnackbarKey } from 'notistack';
 
 const GLOBAL_ADD_SNACKBAR = 'app/global/ADDSNACKBAR';
 const GLOBAL_CLOSE_SNACKBAR = 'app/global/CLOSESNACKBAR';
@@ -23,41 +26,41 @@ const GLOBAL_FETCH_ASSET_GROUPS = 'app/global/GLOBALFETCHASSETGROUPS';
 const GLOBAL_SET_ASSET_GROUPS = 'app/global/GLOBALSETASSETGROUPS';
 const GLOBAL_SET_ASSET_GROUP_INDEX = 'app/global/GLOBALSETASSETGROUPINDEX';
 const GLOBAL_SET_ASSET_GROUP_EDIT = 'app/global/GLOBALSETASSETGROUPEDIT';
+const GLOBAL_SET_DARK_MODE = 'app/global/GLOBALSETDARKMODE';
+const GLOBAL_SET_EXPLORE_LAYOUT = 'app/global/GLOBAL_SET_EXPLORE_LAYOUT';
+const GLOBAL_SET_IS_EXPLORE_TABLE_SELECTED = 'app/global/GLOBAL_SET_IS_EXPLORE_TABLE_SELECTED';
+const GLOBAL_SET_AUTO_RUN_QUERIES = 'app/global/GLOBALSETAUTORUNQUERIES';
+const GLOBAL_SET_SELECTED_EXPLORE_TABLE_COLUMNS = 'app/global/GLOBAL_SET_SELECTED_EXPLORE_TABLE_COLUMNS';
 
 export {
     GLOBAL_ADD_SNACKBAR,
     GLOBAL_CLOSE_SNACKBAR,
-    GLOBAL_REMOVE_SNACKBAR,
-    GLOBAL_SET_EXPANDED,
-    GLOBAL_SET_DOMAIN,
     GLOBAL_FETCH_ASSET_GROUPS,
+    GLOBAL_REMOVE_SNACKBAR,
     GLOBAL_SET_ASSET_GROUPS,
-    GLOBAL_SET_ASSET_GROUP_INDEX,
     GLOBAL_SET_ASSET_GROUP_EDIT,
+    GLOBAL_SET_ASSET_GROUP_INDEX,
+    GLOBAL_SET_AUTO_RUN_QUERIES,
+    GLOBAL_SET_DARK_MODE,
+    GLOBAL_SET_DOMAIN,
+    GLOBAL_SET_EXPANDED,
+    GLOBAL_SET_EXPLORE_LAYOUT,
+    GLOBAL_SET_IS_EXPLORE_TABLE_SELECTED,
+    GLOBAL_SET_SELECTED_EXPLORE_TABLE_COLUMNS,
 };
 
 export interface GlobalViewState {
-    drawerOpen: boolean;
-    pageTitle: string;
     notifications: Notification[];
-}
-
-export interface Notification {
-    message: string;
-    key: string;
-    dismissed: boolean;
-    options: any;
-}
-
-export interface DatapipeStatus {
-    status: 'idle' | 'ingesting' | 'analyzing';
-    updated_at: string;
-    last_complete_analysis_at: string;
+    darkMode: boolean;
+    autoRunQueries: boolean;
+    // Future dev: exploreLayout and isExploreTableSelected are undefined until a user selects a layout. After that, the layout is persisted in localStorage (until cache clears)
+    exploreLayout?: BaseGraphLayoutOptions;
+    isExploreTableSelected?: boolean;
+    selectedExploreTableColumns?: Record<string, boolean>;
 }
 
 export interface GlobalOptionsState {
-    baseUrl: string;
-    domain: Domain | null;
+    domain: Environment | null;
     assetGroups: any[];
     assetGroupIndex: number | null;
     assetGroupEdit: number | null;
@@ -74,19 +77,41 @@ interface AddSnackbarAction {
 
 interface RemoveSnackbarAction {
     type: typeof GLOBAL_REMOVE_SNACKBAR;
-    key: string;
+    key: SnackbarKey;
 }
 
 interface CloseSnackbarAction {
     type: typeof GLOBAL_CLOSE_SNACKBAR;
-    key: string;
+    key: SnackbarKey;
 }
 
-export type GlobalViewActionTypes = AddSnackbarAction | RemoveSnackbarAction | CloseSnackbarAction;
+export interface SetDarkModeAction {
+    type: typeof GLOBAL_SET_DARK_MODE;
+    darkMode: boolean;
+}
+export interface SetExploreLayoutAction {
+    type: typeof GLOBAL_SET_EXPLORE_LAYOUT;
+    exploreLayout: BaseGraphLayoutOptions;
+}
+
+export interface SetAutoRunQueriesAction {
+    type: typeof GLOBAL_SET_AUTO_RUN_QUERIES;
+    autoRunQueries: boolean;
+}
+
+export type GlobalViewActionTypes =
+    | AddSnackbarAction
+    | RemoveSnackbarAction
+    | CloseSnackbarAction
+    | SetDarkModeAction
+    | SetExploreLayoutAction
+    | SetIsExploreTableSelectedAction
+    | SetAutoRunQueriesAction
+    | SetSelectedExploreTableColumns;
 
 export interface SetDomainAction {
     type: typeof GLOBAL_SET_DOMAIN;
-    domain: Domain | null;
+    domain: Environment | null;
 }
 
 export interface FetchAssetGroupsAction {
@@ -106,20 +131,21 @@ export interface SetAssetGroupEditAction {
     assetGroupId: number | null;
 }
 
+export interface SetIsExploreTableSelectedAction {
+    type: typeof GLOBAL_SET_IS_EXPLORE_TABLE_SELECTED;
+    isExploreTableSelected: boolean;
+}
+export interface SetSelectedExploreTableColumns {
+    type: typeof GLOBAL_SET_SELECTED_EXPLORE_TABLE_COLUMNS;
+    selectedExploreTableColumns: Record<string, boolean>;
+}
+
 export type GlobalOptionsActionTypes =
     | SetDomainAction
     | FetchAssetGroupsAction
     | SetAssetGroupsAction
     | SetAssetGroupIndexAction
     | SetAssetGroupEditAction;
-
-export interface Domain {
-    type: string;
-    impactValue: number;
-    name: string;
-    id: string;
-    collected: boolean;
-}
 
 export interface SetExpandedAction {
     type: typeof GLOBAL_SET_EXPANDED;

@@ -17,76 +17,53 @@
 package golang
 
 import (
-	"bytes"
+	"context"
 	"encoding/json"
 	"errors"
 	"fmt"
-	"os"
-	"os/exec"
-	"path"
+	"path/filepath"
 
-	"github.com/specterops/bloodhound/log"
 	"github.com/specterops/bloodhound/packages/go/stbernard/analyzers/codeclimate"
-	"github.com/specterops/bloodhound/slicesext"
+	"github.com/specterops/bloodhound/packages/go/stbernard/cmdrunner"
+	"github.com/specterops/bloodhound/packages/go/stbernard/environment"
 )
 
-var (
-	ErrNonZeroExit = errors.New("non-zero exit status")
-)
-
-func InstallGolangCiLint(env []string) error {
-	cmd := exec.Command("go", "install", "github.com/golangci/golangci-lint/cmd/golangci-lint@v1.55.2")
-	cmd.Env = env
-	if log.GlobalAccepts(log.LevelDebug) {
-		cmd.Stdout = os.Stderr
-		cmd.Stderr = os.Stderr
-	}
-
-	log.Infof("Running golangci-lint install")
-
-	if err := cmd.Run(); err != nil {
-		return fmt.Errorf("install golanci-lint: %w", err)
-	} else {
-		log.Infof("Successfully installed golangci-lint")
-		return nil
-	}
-
-}
-
-func Run(cwd string, modPaths []string, env []string) ([]codeclimate.Entry, error) {
+// Run golangci-lint for all module paths passed to it
+//
+// This is a single runner that accepts the paths for all passed modules, rather than separate runs for each path
+func Run(cwd string, modPath string, env environment.Environment) (codeclimate.SeverityMap, error) {
 	var (
-		result []codeclimate.Entry
-		args   = []string{"run", "--out-format", "code-climate", "--config", ".golangci.json", "--"}
-		outb   bytes.Buffer
-		errb   bytes.Buffer
+		lintEntries []codeclimate.Entry
+		command     = "go"
+		args        = []string{"tool", "golangci-lint", "run", "--fix", "--config", ".golangci.json", "--output.code-climate.path", "stdout", "--"}
 	)
 
-	args = append(args, slicesext.Map(modPaths, func(modPath string) string {
-		return path.Join(modPath, "...")
-	})...)
+	args = append(args, filepath.Join(modPath, "..."))
 
-	cmd := exec.Command("golangci-lint")
-	cmd.Env = env
-	cmd.Dir = cwd
-	cmd.Stderr = &errb
-	cmd.Stdout = &outb
-	cmd.Args = append(cmd.Args, args...)
-
-	log.Infof("Running golangci-lint")
-
-	err := cmd.Run()
-	if _, ok := err.(*exec.ExitError); ok {
-		err = ErrNonZeroExit
-	} else if err != nil {
-		return result, fmt.Errorf("unexpected failure: %w", err)
+	executionPlan := cmdrunner.ExecutionPlan{
+		Command:        command,
+		Args:           args,
+		Path:           cwd,
+		Env:            env.Slice(),
+		SuppressErrors: true,
 	}
 
-	log.Infof("Completed golangci-lint")
+	result, err := cmdrunner.Run(context.TODO(), executionPlan)
+	if err != nil {
+		if !errors.Is(err, cmdrunner.ErrCmdExecutionFailed) {
+			return nil, fmt.Errorf("golangci-lint execution: %w", err)
+		}
 
-	if err := json.NewDecoder(&outb).Decode(&result); err != nil {
-		log.Errorf("Failed to get valid output from golangci-lint. Error output: %s", errb)
-		return result, fmt.Errorf("failed to decode output: %w", err)
+		// exit code 1 is for major or higher analyzer output, higher exit codes indicate something wrong with golangci-lint
+		// or its environment, so make sure to fail out
+		if result.ReturnCode > 1 {
+			return nil, fmt.Errorf("golangci-lint execution: exit code %d", result.ReturnCode)
+		}
 	}
 
-	return result, err
+	if err := json.NewDecoder(result.StandardOutput).Decode(&lintEntries); err != nil {
+		return nil, fmt.Errorf("golangci-lint decoding output: %w", err)
+	}
+
+	return codeclimate.NewSeverityMap(lintEntries), nil
 }

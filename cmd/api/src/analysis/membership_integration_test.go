@@ -15,21 +15,20 @@
 // SPDX-License-Identifier: Apache-2.0
 
 //go:build integration
-// +build integration
 
 package analysis_test
 
 import (
 	"context"
-	schema "github.com/specterops/bloodhound/graphschema"
-	"github.com/specterops/bloodhound/src/test"
 	"testing"
 
-	analysis "github.com/specterops/bloodhound/analysis/ad"
-	"github.com/specterops/bloodhound/dawgs/graph"
-	"github.com/specterops/bloodhound/dawgs/query"
-	"github.com/specterops/bloodhound/graphschema/ad"
-	"github.com/specterops/bloodhound/src/test/integration"
+	"github.com/specterops/bloodhound/cmd/api/src/test"
+	"github.com/specterops/bloodhound/cmd/api/src/test/integration"
+	analysis "github.com/specterops/bloodhound/packages/go/analysis/ad"
+	schema "github.com/specterops/bloodhound/packages/go/graphschema"
+	"github.com/specterops/bloodhound/packages/go/graphschema/ad"
+	"github.com/specterops/dawgs/graph"
+	"github.com/specterops/dawgs/query"
 	"github.com/stretchr/testify/require"
 )
 
@@ -84,10 +83,10 @@ func TestResolveAllGroupMemberships(t *testing.T) {
 
 		test.RequireNilErr(t, err)
 
-		require.Equal(t, 3, int(memberships.Cardinality(harness.RDP.DomainGroupA.ID.Uint32()).Cardinality()))
-		require.Equal(t, 2, int(memberships.Cardinality(harness.RDP.DomainGroupB.ID.Uint32()).Cardinality()))
-		require.Equal(t, 1, int(memberships.Cardinality(harness.RDP.DomainGroupC.ID.Uint32()).Cardinality()))
-		require.Equal(t, 1, int(memberships.Cardinality(harness.RDP.DomainGroupD.ID.Uint32()).Cardinality()))
-		require.Equal(t, 2, int(memberships.Cardinality(harness.RDP.DomainGroupE.ID.Uint32()).Cardinality()))
+		require.Equal(t, 3, int(memberships.Cardinality(harness.RDP.DomainGroupA.ID.Uint64()).Cardinality()))
+		require.Equal(t, 1, int(memberships.Cardinality(harness.RDP.DomainGroupB.ID.Uint64()).Cardinality()))
+		require.Equal(t, 1, int(memberships.Cardinality(harness.RDP.DomainGroupC.ID.Uint64()).Cardinality()))
+		require.Equal(t, 1, int(memberships.Cardinality(harness.RDP.DomainGroupD.ID.Uint64()).Cardinality()))
+		require.Equal(t, 2, int(memberships.Cardinality(harness.RDP.DomainGroupE.ID.Uint64()).Cardinality()))
 	})
 }

@@ -1,17 +1,17 @@
 // Copyright 2023 Specter Ops, Inc.
-// 
+//
 // Licensed under the Apache License, Version 2.0
 // you may not use this file except in compliance with the License.
 // You may obtain a copy of the License at
-// 
+//
 //     http://www.apache.org/licenses/LICENSE-2.0
-// 
+//
 // Unless required by applicable law or agreed to in writing, software
 // distributed under the License is distributed on an "AS IS" BASIS,
 // WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
 // See the License for the specific language governing permissions and
 // limitations under the License.
-// 
+//
 // SPDX-License-Identifier: Apache-2.0
 
 package generator
@@ -19,11 +19,10 @@ package generator
 import (
 	"fmt"
 	"io/fs"
+	"log/slog"
 	"os"
 	"path/filepath"
 	"strings"
-
-	"github.com/specterops/bloodhound/log"
 
 	"cuelang.org/go/cue"
 	"cuelang.org/go/cue/cuecontext"
@@ -96,7 +95,7 @@ func (s *ConfigBuilder) OverlayPath(rootPath string) error {
 		} else {
 			overlayPath := filepath.Join(s.overlayRootPath, strings.TrimPrefix(path, rootPath))
 
-			log.Debugf("Overlaying file: %s to %s", path, overlayPath)
+			slog.Debug(fmt.Sprintf("Overlaying file: %s to %s", path, overlayPath))
 			s.overlay[overlayPath] = load.FromBytes(content)
 		}
 

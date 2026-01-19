@@ -14,14 +14,17 @@
 //
 // SPDX-License-Identifier: Apache-2.0
 
+import { Box, Link } from '@mui/material';
 import { FC } from 'react';
-import { Link, Box } from '@mui/material';
 
 const References: FC = () => {
     return (
-        <Box sx={{ overflowX: 'auto' }}>
-            <Link target='_blank' rel='noopener' href='https://www.google.com'>
-                References go here
+        <Box className='overflow-x-auto'>
+            <Link
+                target='_blank'
+                rel='noopener noreferrer'
+                href='https://learn.microsoft.com/en-us/graph/api/serviceprincipal-addpassword?view=graph-rest-1.0&tabs=http'>
+                Microsoft Docs: servicePrincipal: addPassword
             </Link>
         </Box>
     );

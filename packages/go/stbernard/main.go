@@ -20,38 +20,50 @@ package main
 
 import (
 	"errors"
+	"fmt"
+	"log/slog"
 	"os"
-	"strings"
 
-	"github.com/specterops/bloodhound/log"
+	"github.com/specterops/bloodhound/packages/go/bhlog"
+	"github.com/specterops/bloodhound/packages/go/bhlog/level"
 	"github.com/specterops/bloodhound/packages/go/stbernard/command"
+	"github.com/specterops/bloodhound/packages/go/stbernard/environment"
 )
 
 func main() {
-	const LogLevelVarName = "SB_LOG_LEVEL"
-	var rawLvl = os.Getenv(LogLevelVarName)
+	env, err := environment.NewEnvironment()
+	if err != nil {
+		slog.Error(fmt.Sprintf("Could not init environment: %v", err))
+		os.Exit(1)
+	}
 
-	log.ConfigureDefaults()
+	var rawLvl = env[environment.LogLevelVarName]
+
+	bhlog.ConfigureDefaultText(os.Stderr)
 
 	if rawLvl == "" {
 		rawLvl = "info"
 	}
 
-	if lvl, err := log.ParseLevel(rawLvl); err != nil {
-		log.Errorf("Could not parse log level from %s: %v", LogLevelVarName, err)
+	if lvl, err := bhlog.ParseLevel(rawLvl); err != nil {
+		slog.Error(fmt.Sprintf("Could not parse log level from %s: %v", environment.LogLevelVarName, err))
 	} else {
-		log.SetGlobalLevel(lvl)
+		level.SetGlobalLevel(lvl)
 	}
 
-	if cmd, err := command.ParseCLI(); err != nil {
-		if errors.Is(err, command.ErrNoCmd) {
-			log.Fatalf("No command specified")
-		} else {
-			log.Fatalf("Error while parsing command: %v", err)
-		}
+	if cmd, err := command.ParseCLI(env); errors.Is(err, command.ErrNoCmd) {
+		slog.Error("No valid command specified")
+		os.Exit(1)
+	} else if errors.Is(err, command.ErrHelpRequested) {
+		// No need to exit 1 if help was requested
+		return
+	} else if err != nil {
+		slog.Error(fmt.Sprintf("Error while parsing command: %v", err))
+		os.Exit(1)
 	} else if err := cmd.Run(); err != nil {
-		log.Fatalf("Failed to run command %s: %v", cmd.Name(), err)
+		slog.Error(fmt.Sprintf("Failed to run command `%s`: %v", cmd.Name(), err))
+		os.Exit(1)
 	} else {
-		log.Infof("%s completed successfully", strings.ToUpper(cmd.Name()))
+		slog.Info(fmt.Sprintf("Command `%s` completed successfully", cmd.Name()))
 	}
 }

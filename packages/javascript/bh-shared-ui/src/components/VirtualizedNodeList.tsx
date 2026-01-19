@@ -14,62 +14,111 @@
 //
 // SPDX-License-Identifier: Apache-2.0
 
-import { List, ListItemButton, Tooltip } from '@mui/material';
+import { Tooltip } from '@bloodhoundenterprise/doodleui';
+import { AssetGroupTagMember, GraphNode } from 'js-client-library';
 import { FixedSizeList, ListChildComponentProps } from 'react-window';
+import { cn } from '../utils';
+import { adaptClickHandlerToKeyDown } from '../utils/adaptClickHandlerToKeyDown';
 import NodeIcon from './NodeIcon';
 
-export type VirtualizedNodeListItem = {
+export type NormalizedNodeItem = {
     name: string;
     objectId: string;
     kind: string;
     onClick?: (index: number) => void;
+    graphId?: string;
+    properties?: Record<string, any>;
 };
 
-interface VirtualizedNodeListProps {
-    nodes: VirtualizedNodeListItem[];
-    itemSize?: number;
-}
+const isGraphNode = (node: unknown): node is GraphNode => {
+    return 'label' in (node as GraphNode);
+};
 
-const normalizeItem = (item: VirtualizedNodeListItem): VirtualizedNodeListItem => ({
-    name: item.name || item.objectId || 'Unknown',
-    objectId: item.objectId,
-    kind: item.kind || '',
-    onClick: item.onClick,
-});
+const isAssetGroupTagNode = (node: unknown): node is AssetGroupTagMember => {
+    return 'object_id' in (node as AssetGroupTagMember);
+};
+
+const isNormalizedNodeItem = (node: unknown): node is NormalizedNodeItem => {
+    const castedNode = node as NormalizedNodeItem;
+    return 'name' in castedNode && 'objectId' in castedNode && 'kind' in castedNode;
+};
+
+const normalizeItem = <T,>(item: T): NormalizedNodeItem => {
+    const defaultName = 'NO NAME';
+
+    if (isGraphNode(item)) {
+        return {
+            ...item,
+            name: item.label || item.objectId || defaultName,
+        };
+    } else if (isAssetGroupTagNode(item)) {
+        return {
+            ...item,
+            name: item.name || item.object_id || defaultName,
+            objectId: item.object_id,
+            kind: item.primary_kind,
+        };
+    } else if (isNormalizedNodeItem(item)) {
+        return {
+            ...item,
+            name: item.name || item.objectId || defaultName,
+        };
+    } else {
+        throw new Error('item type is unknown');
+    }
+};
 
 const InnerElement = ({ style, ...rest }: any) => (
-    <List component='ul' disablePadding style={{ ...style, overflowX: 'hidden' }} {...rest} />
+    // Top margin is adjusted to account for FixedSizeList's default of 'overflow: auto'
+    // causing the scrollbar to render even for a single node
+    <ul style={{ ...style, overflowX: 'hidden', marginTop: 0, overflowY: 'auto' }} {...rest}></ul>
 );
 
-const Row = ({ data, index, style }: ListChildComponentProps<VirtualizedNodeListItem[]>) => {
+const Row = <T,>({ data, index, style }: ListChildComponentProps<NodeList<T>>) => {
     const items = data;
     const item = items[index];
     const normalizedItem = normalizeItem(item);
-    const itemClass = index % 2 ? 'odd-item' : 'even-item';
 
     return (
-        <ListItemButton
-            className={itemClass}
-            style={{
-                ...style,
-                padding: '0 8px',
-            }}
-            onClick={() => normalizedItem.onClick?.(index)}
-            data-testid='entity-row'>
-            <NodeIcon nodeType={normalizedItem.kind} />
-            <Tooltip title={normalizedItem.name}>
-                <div style={{ minWidth: '0', whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis' }}>
-                    {normalizedItem.name}
-                </div>
-            </Tooltip>
-        </ListItemButton>
+        <li data-testid='entity-row'>
+            <div
+                style={{ ...style }}
+                className={cn(
+                    'bg-neutral-light-2 dark:bg-neutral-dark-2 flex items-center pl-2 border-y border-y-neutral-light-5',
+                    {
+                        'bg-neutral-light-3 dark:bg-neutral-dark-3': index % 2 !== 0,
+                        'cursor-default pointer-events-none': typeof normalizedItem.onClick !== 'function',
+                    }
+                )}
+                role='button'
+                onClick={() => normalizedItem.onClick?.(index)}
+                onKeyDown={adaptClickHandlerToKeyDown(() => normalizedItem.onClick?.(index))}
+                tabIndex={0}>
+                <NodeIcon nodeType={normalizedItem.kind} />
+                <Tooltip
+                    tooltip={normalizedItem.name}
+                    contentProps={{ className: 'max-w-80 dark:bg-neutral-dark-5 border-0' }}>
+                    <div className={cn('truncate ml-2', { 'ml-10': isAssetGroupTagNode(item) })}>
+                        {normalizedItem.name}
+                    </div>
+                </Tooltip>
+            </div>
+        </li>
     );
 };
 
-const VirtualizedNodeList = ({ nodes, itemSize = 32 }: VirtualizedNodeListProps) => {
+type NodeList<T> = Array<T>;
+
+interface VirtualizedNodeListProps<T> {
+    nodes: NodeList<T>;
+    itemSize?: number;
+    heightScalar?: number;
+}
+
+const VirtualizedNodeList = <T,>({ nodes, itemSize = 32, heightScalar = 16 }: VirtualizedNodeListProps<T>) => {
     return (
         <FixedSizeList
-            height={Math.min(nodes.length, 16) * itemSize}
+            height={Math.min(nodes.length, heightScalar) * itemSize}
             itemCount={nodes.length}
             itemData={nodes}
             itemSize={itemSize}

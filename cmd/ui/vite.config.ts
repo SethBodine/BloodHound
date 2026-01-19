@@ -15,9 +15,9 @@
 // SPDX-License-Identifier: Apache-2.0
 
 /// <reference types="vitest" />
+import react from '@vitejs/plugin-react';
 import path from 'path';
 import { defineConfig, loadEnv, searchForWorkspaceRoot } from 'vite';
-import react from '@vitejs/plugin-react';
 import glsl from 'vite-plugin-glsl';
 
 // https://vitejs.dev/config/
@@ -41,20 +41,28 @@ export default defineConfig(({ mode }) => {
                 ),
             },
             dedupe: [
-                'react',
-                'react-hook-form',
-                '@mui/material',
-                '@mui/styles',
-                '@mui/lab',
+                '@bloodhoundenterprise/doodleui',
                 '@emotion/react',
                 '@emotion/styled',
+                '@faker-js/faker',
                 '@fortawesome/fontawesome-free',
                 '@fortawesome/fontawesome-svg-core',
                 '@fortawesome/free-solid-svg-icons',
                 '@fortawesome/react-fontawesome',
+                '@mona-health/react-input-mask',
+                '@mui/material',
+                '@mui/styles',
+                '@mui/lab',
                 'downshift',
-                'react-query',
+                'history',
                 'notistack',
+                'msw',
+                'react',
+                'react-error-boundary',
+                'react-hook-form',
+                'react-query',
+                'react-router-dom',
+                'tailwindcss',
             ],
             preserveSymlinks: true,
         },
@@ -86,6 +94,15 @@ export default defineConfig(({ mode }) => {
                 reportsDirectory: './coverage',
                 reporter: ['text-summary', 'json-summary'],
             },
+            reporters: [
+                'default',
+                [
+                    'allure-vitest/reporter',
+                    {
+                        resultsDir: '../../allure-results',
+                    },
+                ],
+            ],
         },
         build: {
             outDir: env.BUILD_PATH || './dist',

@@ -18,11 +18,13 @@ package bhapi
 
 import (
 	"context"
+	"errors"
+	"fmt"
+	"log"
+	"log/slog"
 	"net/http"
-	"time"
 
-	"github.com/specterops/bloodhound/log"
-	"github.com/specterops/bloodhound/src/config"
+	"github.com/specterops/bloodhound/cmd/api/src/config"
 )
 
 // Daemon holds data relevant to the API daemon
@@ -33,17 +35,12 @@ type Daemon struct {
 
 // NewDaemon creates a new API daemon
 func NewDaemon(cfg config.Configuration, handler http.Handler) Daemon {
-	networkTimeout := time.Duration(cfg.NetTimeoutSeconds) * time.Second
-
 	return Daemon{
 		cfg: cfg,
 		server: &http.Server{
-			Addr:         cfg.BindAddress,
-			Handler:      handler,
-			WriteTimeout: networkTimeout,
-			ReadTimeout:  networkTimeout,
-			IdleTimeout:  networkTimeout,
-			ErrorLog:     log.Adapter(log.LevelError, "BHAPI", 0),
+			Addr:     cfg.BindAddress,
+			Handler:  handler,
+			ErrorLog: log.Default(),
 		},
 	}
 }
@@ -57,14 +54,14 @@ func (s Daemon) Name() string {
 func (s Daemon) Start(ctx context.Context) {
 	if s.cfg.TLS.Enabled() {
 		if err := s.server.ListenAndServeTLS(s.cfg.TLS.CertFile, s.cfg.TLS.KeyFile); err != nil {
-			if err != http.ErrServerClosed {
-				log.Errorf("HTTP server listen error: %v", err)
+			if !errors.Is(err, http.ErrServerClosed) {
+				slog.ErrorContext(ctx, fmt.Sprintf("HTTP server listen error: %v", err))
 			}
 		}
 	} else {
 		if err := s.server.ListenAndServe(); err != nil {
-			if err != http.ErrServerClosed {
-				log.Errorf("HTTP server listen error: %v", err)
+			if !errors.Is(err, http.ErrServerClosed) {
+				slog.ErrorContext(ctx, fmt.Sprintf("HTTP server listen error: %v", err))
 			}
 		}
 	}

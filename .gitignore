@@ -5,14 +5,12 @@
 # Temporary backup files
 *.bak
 
-# beagle state
-.beagle
-
 # pprof results
 *.pprof
 
 # go binaries
 bin
+packages/go/stbernard/stbernard
 packages/go/schemagen/schemagen
 cmd/api/src/cmd/bhapi/bhapi
 
@@ -161,6 +159,7 @@ tags
 !.vscode/tasks.json
 !.vscode/launch.json
 !.vscode/extensions.json
+!.vscode/*.code-profile
 *.code-workspace
 
 # Local History for Visual Studio Code
@@ -445,3 +444,20 @@ local-harnesses/*
 !local-harnesses/README.md
 !local-harnesses/collectors
 !local-harnesses/*.template
+
+# folder used by antlr4 VSCode extension
+.antlr
+
+# act related files
+.act*
+
+!.actrc
+
+go.work*
+
+!go.work.template
+
+# integration tests allure results
+allure-results
+allure-report
+go-test-results.json

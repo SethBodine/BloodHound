@@ -14,26 +14,35 @@
 //
 // SPDX-License-Identifier: Apache-2.0
 
+import { Button } from '@bloodhoundenterprise/doodleui';
 import { faCheckCircle } from '@fortawesome/free-solid-svg-icons';
 import { FontAwesomeIcon } from '@fortawesome/react-fontawesome';
 import {
     Alert,
     AlertTitle,
-    Box,
-    Button,
     Dialog,
     DialogActions,
     DialogContent,
     DialogContentText,
     DialogTitle,
-    Paper,
     Skeleton,
     Typography,
 } from '@mui/material';
-import { useState } from 'react';
-import { useNavigate } from 'react-router-dom';
-import { Flag, useFeatureFlags, useToggleFeatureFlag } from 'src/hooks/useFeatureFlags';
-import { ContentPage } from 'bh-shared-ui';
+import {
+    Flag,
+    PageWithTitle,
+    Permission,
+    cn,
+    useAppNavigate,
+    useFeatureFlags,
+    useMountEffect,
+    useNotifications,
+    usePermissions,
+    useToggleFeatureFlag,
+} from 'bh-shared-ui';
+import { FC, useState } from 'react';
+import { setDarkMode } from 'src/ducks/global/actions';
+import { useAppDispatch } from 'src/store';
 
 export const EarlyAccessFeatureToggle: React.FC<{
     flag: Flag;
@@ -45,29 +54,24 @@ export const EarlyAccessFeatureToggle: React.FC<{
     };
 
     return (
-        <Paper>
-            <Box p={2} display='flex' justifyContent='space-between' flexWrap='wrap' style={{ rowGap: '1rem' }}>
-                <Box overflow='hidden'>
+        <div className='bg-neutral-2 shadow-outer-1'>
+            <div className='p-4 flex justify-between gap-4'>
+                <div className='overflow-hidden'>
                     <Typography variant='h6'>{flag.name}</Typography>
                     <Typography variant='body1'>{flag.description}</Typography>
-                </Box>
-                <Box>
-                    <Button
-                        disabled={disabled}
-                        variant='outlined'
-                        color={flag.enabled ? 'primary' : 'inherit'}
-                        sx={{
-                            borderColor: () => {
-                                if (!flag.enabled) return 'rgba(0,0,0,0.23)';
-                            },
-                        }}
-                        onClick={handleOnClick}
-                        startIcon={flag.enabled ? <FontAwesomeIcon icon={faCheckCircle} fixedWidth /> : null}>
-                        {flag.enabled ? 'Enabled' : 'Disabled'}
+                </div>
+                <div className='flex items-center justify-center'>
+                    <Button disabled={disabled} onClick={handleOnClick} className='w-32'>
+                        <div className='flex items-center'>
+                            {flag.enabled ? (
+                                <FontAwesomeIcon style={{ marginRight: '8px' }} icon={faCheckCircle} fixedWidth />
+                            ) : null}
+                            <Typography>{flag.enabled ? 'Enabled' : 'Disabled'}</Typography>
+                        </div>
                     </Button>
-                </Box>
-            </Box>
-        </Paper>
+                </div>
+            </div>
+        </div>
     );
 };
 
@@ -92,13 +96,13 @@ export const EarlyAccessFeaturesWarningDialog: React.FC<{
             </DialogContent>
             <DialogActions>
                 <Button
-                    color='inherit'
+                    variant='tertiary'
                     onClick={onCancel}
                     data-testid='early-access-features-warning-dialog_button-close'>
                     {'Take me back'}
                 </Button>
                 <Button
-                    color='primary'
+                    variant='primary'
                     onClick={onConfirm}
                     data-testid='early-access-features-warning-dialog_button-confirm'>
                     {'I understand, show me the new stuff!'}
@@ -108,61 +112,97 @@ export const EarlyAccessFeaturesWarningDialog: React.FC<{
     );
 };
 
-const EarlyAccessFeatures: React.FC = () => {
-    const navigate = useNavigate();
+const EarlyAccessFeatures: FC = () => {
+    const [showWarningDialog, setShowWarningDialog] = useState(true);
+    const dispatch = useAppDispatch();
+    const navigate = useAppNavigate();
     const { data, isLoading, isError } = useFeatureFlags();
     const toggleFeatureFlag = useToggleFeatureFlag();
-    const [showWarningDialog, setShowWarningDialog] = useState(true);
+
+    const { checkPermission } = usePermissions();
+    const hasPermission = checkPermission(Permission.APP_WRITE_APPLICATION_CONFIGURATION);
+
+    const { addNotification, dismissNotification } = useNotifications();
+    const notificationKey = 'manage-feature-flags-permission';
+
+    const effect: React.EffectCallback = () => {
+        if (!hasPermission) {
+            addNotification(
+                `Your role does not grant permission to manage feature flags. Please contact your administrator for details.`,
+                notificationKey,
+                {
+                    persist: true,
+                    anchorOrigin: { vertical: 'top', horizontal: 'right' },
+                }
+            );
+        }
+
+        return () => dismissNotification(notificationKey);
+    };
+
+    useMountEffect(effect);
 
     return (
         <>
-            <ContentPage title='Early Access Features' data-testid='early-access-features'>
+            <PageWithTitle
+                title='Early Access Features'
+                data-testid='early-access-features'
+                pageDescription={
+                    <Typography variant='body2' paragraph>
+                        Enable or disable features available under early access. These features may be unstable, broken,
+                        or incomplete, but are available for testing.
+                    </Typography>
+                }>
                 {!showWarningDialog &&
                     (isLoading ? (
-                        <Paper elevation={0}>
-                            <Box p={2}>
+                        <div className='bg-neutral-2'>
+                            <div className='p-4'>
                                 <Typography variant='h6'>
                                     <Skeleton />
                                 </Typography>
                                 <Typography variant='body1'>
                                     <Skeleton />
                                 </Typography>
-                            </Box>
-                        </Paper>
+                            </div>
+                        </div>
                     ) : isError ? (
                         <Alert severity='error'>
                             <AlertTitle>Could Not Display Early Access Features</AlertTitle>
                             An unexpected error occurred. Please refresh this page or try again later.
                         </Alert>
                     ) : data!.filter((flag) => flag.user_updatable).length === 0 ? (
-                        <Paper elevation={0}>
-                            <Box p={2}>
+                        <div className='bg-neutral-2'>
+                            <div className='p-4'>
                                 <Typography variant='h6'>No Early Access Features Available</Typography>
                                 <Typography variant='body1'>
                                     There are no early access features available at this time. Please check back later.
                                 </Typography>
-                            </Box>
-                        </Paper>
+                            </div>
+                        </div>
                     ) : (
                         data!
                             .filter((flag) => flag.user_updatable)
                             .sort((a, b) => a.id - b.id)
                             .map((flag, index) => (
-                                <Box
-                                    mt={index === 0 ? 0 : 2}
+                                <div
+                                    className={cn({ 'mt-4': index !== 0 })}
                                     key={flag.id}
                                     data-testid={`early-access-features_toggle-${index}`}>
                                     <EarlyAccessFeatureToggle
                                         flag={flag}
                                         onClick={(flagId) => {
+                                            // TODO: Consider adding more flexibility/composability to side effects for toggling feature flags on and off
+                                            if (flag.key === 'dark_mode') {
+                                                dispatch(setDarkMode(false));
+                                            }
                                             toggleFeatureFlag.mutate(flagId);
                                         }}
-                                        disabled={showWarningDialog}
+                                        disabled={showWarningDialog || !hasPermission}
                                     />
-                                </Box>
+                                </div>
                             ))
                     ))}
-            </ContentPage>
+            </PageWithTitle>
             <EarlyAccessFeaturesWarningDialog
                 open={showWarningDialog}
                 onCancel={() => navigate(-1)}

@@ -18,10 +18,9 @@ package migration
 
 import (
 	"embed"
-	"fmt"
 	"io/fs"
 
-	"github.com/specterops/bloodhound/src/version"
+	"github.com/specterops/bloodhound/cmd/api/src/version"
 	"gorm.io/gorm"
 )
 
@@ -55,36 +54,4 @@ func NewMigrator(db *gorm.DB) *Migrator {
 		},
 		DB: db,
 	}
-}
-
-func (s *Migrator) Migrate() error {
-	if err := s.executeStepwiseMigrations(); err != nil {
-		return fmt.Errorf("failed to execute stepwise migrations: %w", err)
-	}
-
-	if err := s.cleanupIngest(); err != nil {
-		return err
-	}
-
-	if err := s.updatePermissions(); err != nil {
-		return err
-	}
-
-	if err := s.updateRoles(); err != nil {
-		return err
-	}
-
-	if err := s.updateAssetGroups(); err != nil {
-		return err
-	}
-
-	if err := s.setAppConfigDefaults(); err != nil {
-		return err
-	}
-
-	if err := s.checkUserEmailAddresses(); err != nil {
-		return err
-	}
-
-	return nil
 }

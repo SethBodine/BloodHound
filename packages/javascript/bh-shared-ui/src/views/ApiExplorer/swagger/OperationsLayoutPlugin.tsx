@@ -14,8 +14,9 @@
 //
 // SPDX-License-Identifier: Apache-2.0
 
-import { Box, Typography, Skeleton, useTheme } from '@mui/material';
+import { Box, Skeleton, Typography } from '@mui/material';
 import { PageWithTitle } from '../../../components';
+import DocumentationLinks from '../../../components/DocumentationLinks';
 
 type Props = {
     getComponent: (
@@ -32,7 +33,6 @@ type Props = {
 };
 
 function CustomLayout(props: Props) {
-    const theme = useTheme();
     const { getComponent, specSelectors } = props;
     const VersionPragmaFilter = getComponent('VersionPragmaFilter', true);
     const FilterContainer = getComponent('FilterContainer', true);
@@ -46,9 +46,18 @@ function CustomLayout(props: Props) {
     const isReady = () => specSelectors.loadingStatus() === 'success';
 
     return (
-        <PageWithTitle title='API Explorer' data-testid='api-explorer'>
+        <PageWithTitle
+            title='API Explorer'
+            data-testid='api-explorer'
+            className='api-explorer'
+            pageDescription={
+                <Typography variant='body2' paragraph>
+                    Review and understand the API endpoints available that power BloodHound. To learn how to use the
+                    API, see {DocumentationLinks.apiUsageLink}.
+                </Typography>
+            }>
             {!isReady() ? (
-                <Box display='grid' gap={theme.spacing(4)}>
+                <Box display='grid' gap={'2rem'}>
                     <Box>
                         <Typography variant='h1'>
                             <Skeleton />
@@ -62,7 +71,7 @@ function CustomLayout(props: Props) {
                     </Box>
                 </Box>
             ) : (
-                <Box className='swagger-ui' display='grid' gap={theme.spacing(4)}>
+                <Box className='swagger-ui' display='grid' gap={'2rem'}>
                     <SvgAssets />
                     <VersionPragmaFilter isSwagger2={isSwagger2} isOAS3={isOAS3} alsoShow={<Errors />}>
                         <Box>

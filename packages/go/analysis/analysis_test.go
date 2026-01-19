@@ -19,11 +19,11 @@ package analysis_test
 import (
 	"testing"
 
-	"github.com/specterops/bloodhound/analysis"
-	"github.com/specterops/bloodhound/dawgs/graph"
-	"github.com/specterops/bloodhound/graphschema/ad"
-	"github.com/specterops/bloodhound/graphschema/azure"
-	"github.com/specterops/bloodhound/slicesext"
+	"github.com/specterops/bloodhound/packages/go/analysis"
+	"github.com/specterops/bloodhound/packages/go/graphschema/ad"
+	"github.com/specterops/bloodhound/packages/go/graphschema/azure"
+	"github.com/specterops/bloodhound/packages/go/slicesext"
+	"github.com/specterops/dawgs/graph"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
@@ -90,10 +90,10 @@ func TestParseKinds(t *testing.T) {
 		assert.Contains(t, err.Error(), unsupportedKind, "expect string to map back to original kind")
 	})
 
-	t.Run("no arguments provided should return the base kinds", func(t *testing.T) {
+	t.Run("no arguments provided should return an empty kinds object", func(t *testing.T) {
 		res, err := analysis.ParseKinds()
 		require.Nil(t, err)
-		assert.Equal(t, graph.Kinds{ad.Entity, azure.Entity}, res)
+		assert.Equal(t, graph.Kinds{}, res)
 	})
 }
 

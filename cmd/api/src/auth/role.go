@@ -17,14 +17,13 @@
 package auth
 
 import (
-	"fmt"
-
-	"github.com/specterops/bloodhound/src/model"
+	"github.com/specterops/bloodhound/cmd/api/src/model"
 )
 
 const (
 	RoleUploadOnly    = "Upload-Only"
 	RoleReadOnly      = "Read-Only"
+	RoleAuditor       = "Auditor"
 	RoleUser          = "User"
 	RolePowerUser     = "Power User"
 	RoleAdministrator = "Administrator"
@@ -36,33 +35,7 @@ type RoleTemplate struct {
 	Permissions model.Permissions
 }
 
-func (s RoleTemplate) Build(allPermissions model.Permissions) (model.Role, error) {
-	role := model.Role{
-		Name:        s.Name,
-		Description: s.Description,
-		Permissions: make(model.Permissions, len(s.Permissions)),
-	}
-
-	for idx, requiredPermission := range s.Permissions {
-		found := false
-
-		for _, permission := range allPermissions {
-			if permission.Equals(requiredPermission) {
-				role.Permissions[idx] = permission
-				found = true
-
-				break
-			}
-		}
-
-		if !found {
-			return role, fmt.Errorf("unable to locate required permission %s for role template %s", requiredPermission, s.Name)
-		}
-	}
-
-	return role, nil
-}
-
+// Roles Note: Not the source of truth, changes here must be added to a migration *.sql file to update the roles & roles_permissions table
 func Roles() map[string]RoleTemplate {
 	permissions := Permissions()
 
@@ -76,6 +49,7 @@ func Roles() map[string]RoleTemplate {
 				permissions.AuthCreateToken,
 				permissions.AuthManageSelf,
 				permissions.GraphDBRead,
+				permissions.SavedQueriesRead,
 			},
 		},
 		RoleUploadOnly: {
@@ -83,7 +57,22 @@ func Roles() map[string]RoleTemplate {
 			Description: "Used for data collection clients, can post data but cannot read data",
 			Permissions: model.Permissions{
 				permissions.ClientsTasking,
-				permissions.GraphDBWrite,
+				permissions.GraphDBIngest,
+			},
+		},
+		RoleAuditor: {
+			Name:        RoleAuditor,
+			Description: "Can read data and audit logs",
+			Permissions: model.Permissions{
+				permissions.AppReadApplicationConfiguration,
+				permissions.APsGenerateReport,
+				permissions.AuthCreateToken,
+				permissions.AuditLogRead,
+				permissions.AuthManageSelf,
+				permissions.AuthReadUsers,
+				permissions.ClientsRead,
+				permissions.GraphDBRead,
+				permissions.SavedQueriesRead,
 			},
 		},
 		RoleUser: {
@@ -105,7 +94,6 @@ func Roles() map[string]RoleTemplate {
 			Description: "Can upload data, manage clients, and perform any action a User can",
 			Permissions: model.Permissions{
 				permissions.AppReadApplicationConfiguration,
-				permissions.AppWriteApplicationConfiguration,
 				permissions.APsGenerateReport,
 				permissions.APsManageAPs,
 				permissions.AuthCreateToken,
@@ -114,10 +102,12 @@ func Roles() map[string]RoleTemplate {
 				permissions.ClientsRead,
 				permissions.ClientsTasking,
 				permissions.CollectionManageJobs,
+				permissions.GraphDBIngest,
 				permissions.GraphDBWrite,
 				permissions.GraphDBRead,
 				permissions.SavedQueriesRead,
 				permissions.SavedQueriesWrite,
+				permissions.GraphDBMutate,
 			},
 		},
 		RoleAdministrator: {

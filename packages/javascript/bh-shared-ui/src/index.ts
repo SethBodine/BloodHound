@@ -17,24 +17,49 @@
 import { Theme } from '@mui/material/styles';
 
 declare module '@mui/styles/defaultTheme' {
-    // eslint-disable-next-line @typescript-eslint/no-empty-interface
     interface DefaultTheme extends Theme {}
 }
 
+declare module '@mui/material/styles' {
+    interface Palette {
+        neutral: { primary: string; secondary: string; tertiary: string; quaternary: string; quinary: string };
+        color: { primary: string; links: string; error: string };
+        low: string;
+        moderate: string;
+        high: string;
+        critical: string;
+    }
+    interface PaletteOptions {
+        neutral?: { primary: string; secondary: string; tertiary: string; quaternary: string; quinary: string };
+        color: { primary: string; links: string; error: string };
+        low: string;
+        moderate: string;
+        high: string;
+        critical: string;
+    }
+}
+
+declare module '@mui/material/Button' {
+    interface ButtonPropsColorOverrides {
+        neutral: true;
+    }
+}
+
+declare module '@mui/material/IconButton' {
+    interface IconButtonPropsColorOverrides {
+        neutral: true;
+    }
+}
+
 export * from './components';
-
-export * from './hooks';
-
-export * from './commonSearches';
-
-export * from './providers';
-
-export * from './utils';
-
+export * from './constants';
+export * from './edgeTypes';
 export * from './graphSchema';
-
-export * from './views';
-
-export * from './store';
-
+export * from './hooks';
 export * from './mocks';
+export * from './providers';
+export * from './routes';
+export * from './store';
+export * from './types';
+export * from './utils';
+export * from './views';

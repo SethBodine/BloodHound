@@ -1,5 +1,7 @@
 # BloodHound Community Edition Docker Compose Example
 
+**NOTE:** We recommend [installing BloodHound Community Edition using bloodhound-cli](https://bloodhound.specterops.io/get-started/quickstart/community-edition-quickstart). However, if you'd prefer to install it via Docker Compose, please follow the instructions below. 
+
 BloodHound Community Edition is composed of three distinct parts:
 
 -   A PostgreSQL database used for application state storage
@@ -40,6 +42,11 @@ what ports different services run on and what credentials should be used):
 -   `bloodhound.config.json`: Configuration file used by the BloodHound API server. This example is a direct copy of the one included
     in the official `bloodhound` docker image to be used as a starting point for modifying the configuration. If you want to change
     database credentials, you'll need to update them here as well so `bloodhound` will know how to connect to them.
+    -   To utilize this file you must also uncomment the following lines in `docker-compose.yml`:
+        ```
+        volumes:
+            - ./bloodhound.config.json:/bloodhound.config.json:ro
+        ```
 -   `.env.example`: Copying this file to `.env` in the same directory as your `docker-compose.yml` will allow you to change
     the environment variables easily. Changes to database credentials here will need to be reflected in the `bloodhound.config.json`.
 
@@ -139,4 +146,11 @@ a single volume is left as an exercise for the reader (you'll need to look at re
 A: By default, we generate a secure random 256-bit key for JWT signing. Because this happens on every server restart,
 any existing sessions will be invalidated. If you need sessions to survive a server restart, there is a configuration
 value available that will allow you to specify your own `base64` encoded 256-bit key. It is recommended that you configure
-this when running Bloodhound on a standalone server, alongside other security configurations.
+this when running BloodHound on a standalone server, alongside other security configurations.
+
+### Q: "My configuration changes in bloodhound.config.json are being ignored. Why?"
+
+A: A copy of this file is already included within the Docker container by default. The BloodHound instance will continue to use
+that file until you copy your local version into the Docker container. This can be done by uncommenting the lines in the
+`docker-compose.yml` file as specified in [this section](#configuring-bloodhound-community-edition). This requires a restart of
+the Docker environment using the commands `docker compose down` and following with `docker compose up`.

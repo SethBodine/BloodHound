@@ -17,6 +17,7 @@
 package model
 
 import (
+	"errors"
 	"fmt"
 	"net/http"
 	"regexp"
@@ -24,10 +25,14 @@ import (
 	"strconv"
 	"strings"
 
-	"github.com/specterops/bloodhound/dawgs/graph"
-	"github.com/specterops/bloodhound/dawgs/query"
+	"github.com/specterops/dawgs/cypher/models"
+	"github.com/specterops/dawgs/cypher/models/pgsql"
+	"github.com/specterops/dawgs/cypher/models/pgsql/format"
 
-	"github.com/specterops/bloodhound/errors"
+	"github.com/specterops/dawgs/graph"
+	"github.com/specterops/dawgs/query"
+
+	"github.com/specterops/bloodhound/packages/go/graphschema/common"
 )
 
 type FilterOperator string
@@ -39,6 +44,7 @@ const (
 	LessThanOrEquals    FilterOperator = "lte"
 	Equals              FilterOperator = "eq"
 	NotEquals           FilterOperator = "neq"
+	ApproximatelyEquals FilterOperator = "~eq"
 
 	GreaterThanSymbol         string = ">"
 	GreaterThanOrEqualsSymbol string = ">="
@@ -46,14 +52,16 @@ const (
 	LessThanOrEqualsSymbol    string = "<="
 	EqualsSymbol              string = "="
 	NotEqualsSymbol           string = "<>"
+	ApproximatelyEqualSymbol  string = "ILIKE"
 
+	NullString     = "null"
 	TrueString     = "true"
 	FalseString    = "false"
 	IdString       = "id"
 	ObjectIdString = "objectid"
-
-	ErrNotFiltered = errors.Error("parameter value is not filtered")
 )
+
+var ErrNotFiltered = errors.New("parameter value is not filtered")
 
 type Filtered interface {
 	ValidFilters() map[string][]FilterOperator
@@ -79,6 +87,9 @@ func ParseFilterOperator(raw string) (FilterOperator, error) {
 	case NotEquals:
 		return NotEquals, nil
 
+	case ApproximatelyEquals:
+		return ApproximatelyEquals, nil
+
 	default:
 		return "", fmt.Errorf("unknown query parameter filter predicate: %s", raw)
 	}
@@ -94,52 +105,209 @@ type QueryParameterFilter struct {
 	Operator     FilterOperator
 	Value        string
 	IsStringData bool
+	SetOperator  FilterSetOperator
 }
 
 type QueryParameterFilters []QueryParameterFilter
-type QueryParameterFilterMap map[string]QueryParameterFilters
 
-func (s QueryParameterFilterMap) BuildSQLFilter() (SQLFilter, error) {
+func (s QueryParameterFilter) BuildGDBNodeFilter() graph.Criteria {
 	var (
-		result      strings.Builder
-		firstFilter = true
-		predicate   string
-		params      []any
+		propertyRef = query.NodeProperty(s.Name)
+		value       = guessFilterValueType(s.Value)
 	)
 
-	for _, filters := range s {
-		for _, filter := range filters {
-			if !firstFilter {
-				result.WriteString(" AND ")
-			}
-
-			switch filter.Operator {
-			case GreaterThan:
-				predicate = GreaterThanSymbol
-			case GreaterThanOrEquals:
-				predicate = GreaterThanOrEqualsSymbol
-			case LessThan:
-				predicate = LessThanSymbol
-			case LessThanOrEquals:
-				predicate = LessThanOrEqualsSymbol
-			case Equals:
-				predicate = EqualsSymbol
-			case NotEquals:
-				predicate = NotEqualsSymbol
-			default:
-				return SQLFilter{}, fmt.Errorf("invalid filter predicate specified")
-			}
-
-			result.WriteString(filter.Name)
-			result.WriteString(" ")
-			result.WriteString(predicate)
-			result.WriteString(" ?")
-			params = append(params, filter.Value)
-			firstFilter = false
+	// TODO: Investigate whether we can set the collected property for domains that originate from trusts in ParseDomainTrusts
+	switch {
+	case s.Name == common.Collected.String() && s.Operator == Equals:
+		switch s.Value {
+		case FalseString:
+			return query.Or(
+				query.Equals(propertyRef, false),
+				query.Not(query.Exists(propertyRef)),
+			)
+		case TrueString:
+			return query.Equals(propertyRef, true)
 		}
 	}
 
-	return SQLFilter{SQLString: result.String(), Params: params}, nil
+	switch s.Operator {
+	case GreaterThan:
+		return query.GreaterThan(propertyRef, value)
+	case GreaterThanOrEquals:
+		return query.GreaterThanOrEquals(propertyRef, value)
+	case LessThan:
+		return query.LessThan(propertyRef, value)
+	case LessThanOrEquals:
+		return query.LessThanOrEquals(propertyRef, value)
+	case Equals:
+		return query.Equals(propertyRef, value)
+	case NotEquals:
+		return query.Not(query.Equals(propertyRef, value))
+	default:
+		return nil
+	}
+}
+
+type QueryParameterFilterMap map[string]QueryParameterFilters
+
+// ToFiltersModel converts the query parameter filter map model into the newer, more generic filter
+// model. This is useful when accessing newer functions that expect the newer model without having
+// refactor multiple sites all-at-once.
+func (s QueryParameterFilterMap) ToFiltersModel() Filters {
+	convertedFilters := Filters{}
+
+	for name, oldModelFilters := range s {
+		newModelFilters := make([]Filter, len(oldModelFilters))
+		for idx, oldModelFilter := range oldModelFilters {
+			newModelFilters[idx] = Filter{
+				Operator:    oldModelFilter.Operator,
+				Value:       oldModelFilter.Value,
+				SetOperator: oldModelFilter.SetOperator,
+			}
+		}
+
+		convertedFilters[name] = newModelFilters
+	}
+
+	return convertedFilters
+}
+
+// filterValueAsPGLiteral takes a string value and returns a PG SQL literal that represents the value in the form of a
+// Go struct. This function will attempt to parse the string value into different types but otherwise defaults to the
+// given string value as a wrapped literal.
+func filterValueAsPGLiteral(valueStr string, isNullValue bool) (pgsql.Literal, error) {
+	if isNullValue {
+		return pgsql.NullLiteral(), nil
+	}
+
+	if valueInt64, err := strconv.ParseInt(valueStr, 10, 64); err == nil {
+		return pgsql.NewLiteral(valueInt64, pgsql.Int8), nil
+	}
+
+	if valueFloat64, err := strconv.ParseFloat(valueStr, 64); err == nil {
+		return pgsql.NewLiteral(valueFloat64, pgsql.Float8), nil
+	}
+
+	if valueBool, err := strconv.ParseBool(valueStr); err == nil {
+		return pgsql.NewLiteral(valueBool, pgsql.Boolean), nil
+	}
+
+	// Default to the pgsql package type conversion
+	return pgsql.AsLiteral(valueStr)
+}
+
+// BuildSQLFilter builds a PGSQL syntax-correct SQLFilter result from the given Filters struct. This function
+// uses the PGSQL AST to ensure formatted SQL correctness.
+func BuildSQLFilter(filters Filters, tableAlias models.Optional[string]) (SQLFilter, error) {
+	var whereClauseFragment pgsql.Expression
+
+	for name, filterOperations := range filters {
+		var (
+			formattedName = strings.TrimSpace(strings.ToLower(name))
+
+			columnReference          pgsql.Expression = pgsql.Identifier(formattedName)
+			innerWhereClauseFragment pgsql.Expression
+			needsParenthetical       bool
+		)
+		if tableAlias.Set {
+			columnReference = pgsql.AsCompoundIdentifier(tableAlias.Value, formattedName)
+		}
+
+		for _, filter := range filterOperations {
+			var (
+				operator    pgsql.Operator
+				filterValue = filter.Value
+				isNullValue = filterValue == NullString
+			)
+
+			switch filter.Operator {
+			case GreaterThan:
+				operator = pgsql.OperatorGreaterThan
+
+			case GreaterThanOrEquals:
+				operator = pgsql.OperatorGreaterThanOrEqualTo
+
+			case LessThan:
+				operator = pgsql.OperatorLessThan
+
+			case LessThanOrEquals:
+				operator = pgsql.OperatorLessThanOrEqualTo
+
+			case Equals:
+				if isNullValue {
+					operator = pgsql.OperatorIs
+				} else {
+					operator = pgsql.OperatorEquals
+				}
+
+			case NotEquals:
+				if isNullValue {
+					operator = pgsql.OperatorIsNot
+				} else {
+					operator = pgsql.OperatorNotEquals
+				}
+
+			case ApproximatelyEquals:
+				operator = pgsql.OperatorLike
+				filterValue = "%" + filterValue + "%"
+
+			default:
+				return SQLFilter{}, fmt.Errorf("invalid operator specified")
+			}
+
+			if literalValue, err := filterValueAsPGLiteral(filterValue, isNullValue); err != nil {
+				return SQLFilter{}, fmt.Errorf("invalid filter value specified for %s: %w", name, err)
+			} else {
+				setOperator := pgsql.OperatorAnd
+				if filter.SetOperator == FilterOr {
+					needsParenthetical = true
+					setOperator = pgsql.OperatorOr
+				}
+
+				if innerWhereClauseFragment == nil {
+					innerWhereClauseFragment = pgsql.NewBinaryExpression(
+						columnReference,
+						operator,
+						literalValue,
+					)
+				} else {
+					innerWhereClauseFragment = pgsql.NewBinaryExpression(innerWhereClauseFragment, setOperator, pgsql.NewBinaryExpression(
+						columnReference,
+						operator,
+						literalValue,
+					))
+				}
+			}
+		}
+
+		// OR statements need parens between AND clauses
+		if needsParenthetical {
+			innerWhereClauseFragment = pgsql.NewParenthetical(innerWhereClauseFragment).AsExpression()
+		}
+		whereClauseFragment = pgsql.OptionalAnd(whereClauseFragment, innerWhereClauseFragment)
+	}
+
+	var filter SQLFilter
+
+	if whereClauseFragment != nil {
+		if sqlFragment, err := format.SyntaxNode(whereClauseFragment); err != nil {
+			return filter, fmt.Errorf("failed formatting SQL filter: %w", err)
+		} else {
+			filter = SQLFilter{
+				SQLString: sqlFragment,
+			}
+		}
+	}
+
+	return filter, nil
+}
+
+func (s QueryParameterFilterMap) BuildAliasedSQLFilter(tableAlias models.Optional[string]) (SQLFilter, error) {
+	return BuildSQLFilter(s.ToFiltersModel(), tableAlias)
+}
+
+func (s QueryParameterFilterMap) BuildSQLFilter() (SQLFilter, error) {
+	return s.BuildAliasedSQLFilter(models.EmptyOptional[string]())
 }
 
 func guessFilterValueType(raw string) any {
@@ -167,25 +335,7 @@ func (s QueryParameterFilterMap) BuildGDBNodeFilter() graph.Criteria {
 
 	for _, filters := range s {
 		for _, filter := range filters {
-			switch filter.Operator {
-			case GreaterThan:
-				criteria = append(criteria, query.GreaterThan(query.NodeProperty(filter.Name), guessFilterValueType(filter.Value)))
-
-			case GreaterThanOrEquals:
-				criteria = append(criteria, query.GreaterThanOrEquals(query.NodeProperty(filter.Name), guessFilterValueType(filter.Value)))
-
-			case LessThan:
-				criteria = append(criteria, query.LessThan(query.NodeProperty(filter.Name), guessFilterValueType(filter.Value)))
-
-			case LessThanOrEquals:
-				criteria = append(criteria, query.LessThanOrEquals(query.NodeProperty(filter.Name), guessFilterValueType(filter.Value)))
-
-			case Equals:
-				criteria = append(criteria, query.Equals(query.NodeProperty(filter.Name), guessFilterValueType(filter.Value)))
-
-			case NotEquals:
-				criteria = append(criteria, query.Not(query.Equals(query.NodeProperty(filter.Name), guessFilterValueType(filter.Value))))
-			}
+			criteria = append(criteria, filter.BuildGDBNodeFilter())
 		}
 	}
 
@@ -302,9 +452,13 @@ func (s QueryParameterFilterParser) ParseQueryParameterFilters(request *http.Req
 			continue
 		}
 
+		if slices.Contains(IgnoreFilters(), name) {
+			continue
+		}
+
 		for _, value := range values {
 			if filter, err := s.ParseQueryParameterFilter(name, value); err != nil {
-				if err != ErrNotFiltered {
+				if !errors.Is(err, ErrNotFiltered) {
 					return nil, err
 				}
 			} else {
@@ -318,6 +472,36 @@ func (s QueryParameterFilterParser) ParseQueryParameterFilters(request *http.Req
 
 func NewQueryParameterFilterParser() QueryParameterFilterParser {
 	return QueryParameterFilterParser{
-		re: regexp.MustCompile(`([\w]+):([\w\d\--_]+)`),
+		re: regexp.MustCompile(`([~\w]+):([\w\--_ ]+)`),
 	}
 }
+
+type Filter struct {
+	Operator    FilterOperator
+	Value       string
+	SetOperator FilterSetOperator
+}
+
+type Filters map[string][]Filter
+type ValidFilters map[string][]FilterOperator
+type SortDirection int
+
+const (
+	InvalidSortDirection SortDirection = iota
+	AscendingSortDirection
+	DescendingSortDirection
+)
+
+type FilterSetOperator string
+
+const (
+	FilterAnd FilterSetOperator = "AND"
+	FilterOr  FilterSetOperator = "OR"
+)
+
+type SortItem struct {
+	Direction SortDirection
+	Column    string
+}
+
+type Sort []SortItem

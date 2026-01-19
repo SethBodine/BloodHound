@@ -16,10 +16,17 @@
 
 export { default as ApiExplorer } from './ApiExplorer';
 
-export { default as UserProfile } from './UserProfile';
+export * from './DataQuality';
 
 export * from './Explore';
 
-export * from './DataQuality';
+export * from './PrivilegeZones';
+export { default as PrivilegeZones } from './PrivilegeZones';
 
-export * from './Explore/ExploreSearch';
+export { default as SSOConfiguration } from './SSOConfiguration';
+
+export { default as UserProfile } from './UserProfile';
+
+export { default as Users } from './Users';
+
+export * from './Users';

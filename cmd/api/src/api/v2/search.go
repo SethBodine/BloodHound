@@ -19,57 +19,88 @@ package v2
 import (
 	"context"
 	"fmt"
-	"github.com/specterops/bloodhound/analysis"
-	"github.com/specterops/bloodhound/dawgs/graph"
-	"github.com/specterops/bloodhound/graphschema/azure"
-	"github.com/specterops/bloodhound/graphschema/common"
-	"github.com/specterops/bloodhound/src/api"
-	"github.com/specterops/bloodhound/src/model"
-	"github.com/specterops/bloodhound/src/utils"
 	"net/http"
+
+	"github.com/specterops/bloodhound/cmd/api/src/api"
+	"github.com/specterops/bloodhound/cmd/api/src/auth"
+	bhCtx "github.com/specterops/bloodhound/cmd/api/src/ctx"
+	"github.com/specterops/bloodhound/cmd/api/src/model"
+	"github.com/specterops/bloodhound/cmd/api/src/model/appcfg"
+	"github.com/specterops/bloodhound/cmd/api/src/utils"
+	"github.com/specterops/bloodhound/packages/go/analysis"
+	"github.com/specterops/bloodhound/packages/go/graphschema"
+	"github.com/specterops/bloodhound/packages/go/graphschema/ad"
+	"github.com/specterops/bloodhound/packages/go/graphschema/azure"
+	"github.com/specterops/bloodhound/packages/go/graphschema/common"
+	"github.com/specterops/dawgs/graph"
 )
 
 func (s Resources) SearchHandler(response http.ResponseWriter, request *http.Request) {
 	var (
-		queryParams = request.URL.Query()
-		searchQuery = queryParams.Get("q")
-		nodeTypes   = queryParams["type"]
-		ctx         = request.Context()
+		queryParams     = request.URL.Query()
+		searchQuery     = queryParams.Get("q")
+		nodeTypes       = queryParams["type"]
+		ctx             = request.Context()
+		etacAllowedList []string
 	)
+
+	if user, isUser := auth.GetUserFromAuthCtx(bhCtx.FromRequest(request).AuthCtx); !isUser {
+		api.WriteErrorResponse(request.Context(), api.BuildErrorResponse(http.StatusBadRequest, "no associated user found with request", request), response)
+		return
+	} else {
+		// ETAC feature flag
+		if etacFlag, err := s.DB.GetFlagByKey(request.Context(), appcfg.FeatureETAC); err != nil {
+			api.HandleDatabaseError(request, response, err)
+			return
+		} else if etacFlag.Enabled && !user.AllEnvironments {
+			etacAllowedList = ExtractEnvironmentIDsFromUser(&user)
+		}
+	}
 
 	if searchQuery == "" {
 		api.WriteErrorResponse(request.Context(), api.BuildErrorResponse(http.StatusBadRequest, "Invalid search parameter", request), response)
 	} else if skip, limit, _, err := utils.GetPageParamsForGraphQuery(context.Background(), queryParams); err != nil {
 		api.WriteErrorResponse(request.Context(), api.BuildErrorResponse(http.StatusBadRequest, fmt.Sprintf("Invalid query parameter: %v", err), request), response)
-	} else if nodeKinds, err := analysis.ParseKinds(nodeTypes...); err != nil {
+	} else if openGraphSearchFeatureFlag, err := s.DB.GetFlagByKey(request.Context(), appcfg.FeatureOpenGraphSearch); err != nil {
+		api.HandleDatabaseError(request, response, err)
+	} else if nodeKinds, err := getNodeKinds(openGraphSearchFeatureFlag.Enabled, nodeTypes...); err != nil {
 		api.WriteErrorResponse(request.Context(), api.BuildErrorResponse(http.StatusBadRequest, "Invalid type parameter", request), response)
-	} else if result, err := s.GraphQuery.SearchNodesByName(ctx, nodeKinds, searchQuery, skip, limit); err != nil {
+	} else if result, err := s.GraphQuery.SearchNodesByNameOrObjectId(ctx, nodeKinds, searchQuery, openGraphSearchFeatureFlag.Enabled, skip, limit, etacAllowedList); err != nil {
 		api.WriteErrorResponse(request.Context(), api.BuildErrorResponse(http.StatusInternalServerError, fmt.Sprintf("Graph error: %v", err), request), response)
 	} else {
 		api.WriteBasicResponse(request.Context(), result, http.StatusOK, response)
 	}
 }
 
+// getNodeKinds preserves legacy parseKinds behavior when the OpenGraphSearch feature flag is disabled.
+func getNodeKinds(openGraphSearchEnabled bool, nodeTypes ...string) (graph.Kinds, error) {
+	if !openGraphSearchEnabled && len(nodeTypes) == 0 {
+		return analysis.ParseKinds(ad.Entity.String(), azure.Entity.String())
+	} else {
+		return analysis.ParseKinds(nodeTypes...)
+	}
+}
+
 func (s *Resources) GetAvailableDomains(response http.ResponseWriter, request *http.Request) {
 	var domains model.DomainSelectors
 
-	if orderCriteria, err := domains.GetOrderCriteria(request.URL.Query()); err != nil {
+	if sortItems, err := api.ParseGraphSortParameters(domains, request.URL.Query()); err != nil {
 		api.WriteErrorResponse(request.Context(), api.BuildErrorResponse(http.StatusBadRequest, api.ErrorResponseDetailsNotSortable, request), response)
 	} else if filterCriteria, err := domains.GetFilterCriteria(request); err != nil {
 		api.WriteErrorResponse(request.Context(), api.BuildErrorResponse(http.StatusBadRequest, err.Error(), request), response)
-	} else if nodes, err := s.GraphQuery.GetFilteredAndSortedNodes(orderCriteria, filterCriteria); err != nil {
+	} else if nodes, err := s.GraphQuery.GetFilteredAndSortedNodes(sortItems, filterCriteria); err != nil {
 		api.WriteErrorResponse(request.Context(), api.BuildErrorResponse(http.StatusInternalServerError, fmt.Sprintf("%s: %s", api.ErrorResponseDetailsInternalServerError, err), request), response)
 	} else {
 		api.WriteBasicResponse(request.Context(), setNodeProperties(nodes), http.StatusOK, response)
 	}
 }
 
-func setNodeProperties(nodes graph.NodeSet) model.DomainSelectors {
+func setNodeProperties(nodes []*graph.Node) model.DomainSelectors {
 	domains := model.DomainSelectors{}
 	for _, node := range nodes {
 		var (
-			name, _      = node.Properties.GetOrDefault(common.Name.String(), "NO NAME").String()
-			objectID, _  = node.Properties.GetOrDefault(common.ObjectID.String(), "NO OBJECT ID").String()
+			name, _      = node.Properties.GetOrDefault(common.Name.String(), graphschema.DefaultMissingName).String()
+			objectID, _  = node.Properties.GetOrDefault(common.ObjectID.String(), graphschema.DefaultMissingObjectId).String()
 			collected, _ = node.Properties.GetOrDefault(common.Collected.String(), false).Bool()
 			domainType   = "active-directory"
 		)

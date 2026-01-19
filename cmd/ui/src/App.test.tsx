@@ -14,13 +14,16 @@
 //
 // SPDX-License-Identifier: Apache-2.0
 
+import { DeepPartial, apiClient } from 'bh-shared-ui';
 import { rest } from 'msw';
 import { setupServer } from 'msw/node';
-import App from 'src/App';
-import { render, screen } from 'src/test-utils';
+import App, { Inner } from 'src/App';
+import * as authSlice from 'src/ducks/auth/authSlice';
+import { act, render, screen } from 'src/test-utils';
+import { AppState } from './store';
 
 const server = setupServer(
-    rest.get('/api/v2/saml/sso', (req, res, ctx) => {
+    rest.get('/api/v2/sso-providers', (req, res, ctx) => {
         return res(
             ctx.json({
                 endpoints: [],
@@ -33,6 +36,23 @@ const server = setupServer(
                 data: [],
             })
         );
+    }),
+    rest.get('/api/v2/available-domains', (req, res, ctx) => {
+        return res(
+            ctx.json({
+                data: [],
+            })
+        );
+    }),
+    rest.get('/api/v2/self', (req, res, ctx) => {
+        return res(
+            ctx.json({
+                data: [],
+            })
+        );
+    }),
+    rest.get('/api/v2/file-upload/accepted-types', async (_, res, ctx) => {
+        return res(ctx.status(200));
     })
 );
 
@@ -47,5 +67,42 @@ describe('app', () => {
     it.skip('renders', async () => {
         render(<App />);
         expect(await screen.findByText('LOGIN')).toBeInTheDocument();
+    });
+
+    describe('<Inner />', () => {
+        const setup = async () => {
+            await act(async () => {
+                const initialState: DeepPartial<AppState> = {
+                    auth: {
+                        ...authSlice.initialState,
+                        isInitialized: true,
+                    },
+                };
+                render(<Inner />, { initialState });
+            });
+        };
+
+        it('does not make feature-flag request if user is not fully authenticated', async () => {
+            const featureFlagSpy = vi.spyOn(apiClient, 'getFeatureFlags');
+            const fullyAuthenticatedSelectorSpy = vi.spyOn(authSlice, 'fullyAuthenticatedSelector');
+
+            // hard code user as not authenticated
+            fullyAuthenticatedSelectorSpy.mockReturnValue(false);
+
+            await setup();
+
+            expect(featureFlagSpy).not.toHaveBeenCalled();
+        });
+
+        it('will request feature-flags when the user is fully authenticated', async () => {
+            const featureFlagSpy = vi.spyOn(apiClient, 'getFeatureFlags');
+            const fullyAuthenticatedSelectorSpy = vi.spyOn(authSlice, 'fullyAuthenticatedSelector');
+            // hard code user as fully authenticated
+            fullyAuthenticatedSelectorSpy.mockReturnValue(true);
+
+            await setup();
+
+            expect(featureFlagSpy).toHaveBeenCalled();
+        });
     });
 });

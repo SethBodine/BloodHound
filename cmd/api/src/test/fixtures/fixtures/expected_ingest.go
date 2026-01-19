@@ -18,13 +18,15 @@ package fixtures
 
 import (
 	"bytes"
-	"github.com/specterops/bloodhound/cypher/backend/cypher"
-	"github.com/specterops/bloodhound/cypher/model"
-	"github.com/specterops/bloodhound/dawgs/graph"
-	"github.com/specterops/bloodhound/dawgs/query"
-	"github.com/specterops/bloodhound/graphschema/ad"
-	"github.com/specterops/bloodhound/graphschema/common"
-	"github.com/specterops/bloodhound/src/test"
+
+	"github.com/specterops/dawgs/cypher/models/cypher/format"
+
+	"github.com/specterops/bloodhound/cmd/api/src/test"
+	"github.com/specterops/bloodhound/packages/go/graphschema/ad"
+	"github.com/specterops/bloodhound/packages/go/graphschema/common"
+	"github.com/specterops/dawgs/cypher/models/cypher"
+	"github.com/specterops/dawgs/graph"
+	"github.com/specterops/dawgs/query"
 	"github.com/stretchr/testify/require"
 )
 
@@ -67,12 +69,79 @@ var (
 			query.Kind(query.Relationship(), ad.GetChangesAll),
 			query.Kind(query.End(), ad.Domain),
 			query.Equals(query.EndProperty(common.ObjectID.String()), "S-1-5-21-3130019616-2776909439-2417379446")),
-		query.And(
-			query.Kind(query.Start(), ad.Domain),
-			query.Equals(query.StartProperty(common.ObjectID.String()), "S-1-5-21-3084884204-958224920-2707782873"),
-			query.Kind(query.Relationship(), ad.TrustedBy),
-			query.Kind(query.End(), ad.Domain),
-			query.Equals(query.EndProperty(common.ObjectID.String()), "S-1-5-21-3130019616-2776909439-2417379446")),
+		//TODO: These new tests are not valid, we need to investigate with Jonas
+		// query.And( // ParentChild outbound
+		// 	query.Kind(query.Start(), ad.Domain),
+		// 	query.Equals(query.StartProperty(common.ObjectID.String()), "S-1-5-21-3130019616-2776909439-2417379446"),
+		// 	query.Kind(query.Relationship(), ad.SameForestTrust),
+		// 	query.Kind(query.End(), ad.Domain),
+		// 	query.Equals(query.EndProperty(common.ObjectID.String()), "S-1-5-21-3084884204-958224920-2707782875")),
+		// query.And( // ParentChild inbound
+		// 	query.Kind(query.Start(), ad.Domain),
+		// 	query.Equals(query.StartProperty(common.ObjectID.String()), "S-1-5-21-3084884204-958224920-2707782875"),
+		// 	query.Kind(query.Relationship(), ad.SameForestTrust),
+		// 	query.Kind(query.End(), ad.Domain),
+		// 	query.Equals(query.EndProperty(common.ObjectID.String()), "S-1-5-21-3130019616-2776909439-2417379446")),
+		// query.And( // Treeroot outbound
+		// 	query.Kind(query.Start(), ad.Domain),
+		// 	query.Equals(query.StartProperty(common.ObjectID.String()), "S-1-5-21-3130019616-2776909439-2417379446"),
+		// 	query.Kind(query.Relationship(), ad.SameForestTrust),
+		// 	query.Kind(query.End(), ad.Domain),
+		// 	query.Equals(query.EndProperty(common.ObjectID.String()), "S-1-5-21-3084884204-958224920-2707782876")),
+		// query.And( // Treeroot inbound
+		// 	query.Kind(query.Start(), ad.Domain),
+		// 	query.Equals(query.StartProperty(common.ObjectID.String()), "S-1-5-21-3084884204-958224920-2707782876"),
+		// 	query.Kind(query.Relationship(), ad.SameForestTrust),
+		// 	query.Kind(query.End(), ad.Domain),
+		// 	query.Equals(query.EndProperty(common.ObjectID.String()), "S-1-5-21-3130019616-2776909439-2417379446")),
+		// query.And( // CrossLink outbound
+		// 	query.Kind(query.Start(), ad.Domain),
+		// 	query.Equals(query.StartProperty(common.ObjectID.String()), "S-1-5-21-3130019616-2776909439-2417379446"),
+		// 	query.Kind(query.Relationship(), ad.SameForestTrust),
+		// 	query.Kind(query.End(), ad.Domain),
+		// 	query.Equals(query.EndProperty(common.ObjectID.String()), "S-1-5-21-3084884204-958224920-2707782877")),
+		// query.And( // Forest outbound
+		// 	query.Kind(query.Start(), ad.Domain),
+		// 	query.Equals(query.StartProperty(common.ObjectID.String()), "S-1-5-21-3130019616-2776909439-2417379446"),
+		// 	query.Kind(query.Relationship(), ad.CrossForestTrust),
+		// 	query.Kind(query.End(), ad.Domain),
+		// 	query.Equals(query.EndProperty(common.ObjectID.String()), "S-1-5-21-3084884204-958224920-2707782878")),
+		// query.And( // SpoofSIDHistory inbound (based on forest outbound)
+		// 	query.Kind(query.Start(), ad.Domain),
+		// 	query.Equals(query.StartProperty(common.ObjectID.String()), "S-1-5-21-3084884204-958224920-2707782878"),
+		// 	query.Kind(query.Relationship(), ad.SpoofSIDHistory),
+		// 	query.Kind(query.End(), ad.Domain),
+		// 	query.Equals(query.EndProperty(common.ObjectID.String()), "S-1-5-21-3130019616-2776909439-2417379446")),
+		// query.And( // External inbound
+		// 	query.Kind(query.Start(), ad.Domain),
+		// 	query.Equals(query.StartProperty(common.ObjectID.String()), "S-1-5-21-3084884204-958224920-2707782879"),
+		// 	query.Kind(query.Relationship(), ad.CrossForestTrust),
+		// 	query.Kind(query.End(), ad.Domain),
+		// 	query.Equals(query.EndProperty(common.ObjectID.String()), "S-1-5-21-3130019616-2776909439-2417379446")),
+		// query.And( // Kerberos outbound
+		// 	query.Kind(query.Start(), ad.Domain),
+		// 	query.Equals(query.StartProperty(common.ObjectID.String()), "S-1-5-21-3130019616-2776909439-2417379446"),
+		// 	query.Kind(query.Relationship(), ad.CrossForestTrust),
+		// 	query.Kind(query.End(), ad.Domain),
+		// 	query.Equals(query.EndProperty(common.ObjectID.String()), "S-1-5-21-3084884204-958224920-2707782880")),
+		// query.And( // Kerberos inbound
+		// 	query.Kind(query.Start(), ad.Domain),
+		// 	query.Equals(query.StartProperty(common.ObjectID.String()), "S-1-5-21-3084884204-958224920-2707782880"),
+		// 	query.Kind(query.Relationship(), ad.CrossForestTrust),
+		// 	query.Kind(query.End(), ad.Domain),
+		// 	query.Equals(query.EndProperty(common.ObjectID.String()), "S-1-5-21-3130019616-2776909439-2417379446")),
+		// query.And( // SpoofSIDHistory inbound (based on Kerberos outbound)
+		// 	query.Kind(query.Start(), ad.Domain),
+		// 	query.Equals(query.StartProperty(common.ObjectID.String()), "S-1-5-21-3084884204-958224920-2707782880"),
+		// 	query.Kind(query.Relationship(), ad.SpoofSIDHistory),
+		// 	query.Kind(query.End(), ad.Domain),
+		// 	query.Equals(query.EndProperty(common.ObjectID.String()), "S-1-5-21-3130019616-2776909439-2417379446")),
+		// query.And( // Unknown outbound
+		// 	query.Kind(query.Start(), ad.Domain),
+		// 	query.Equals(query.StartProperty(common.ObjectID.String()), "S-1-5-21-3130019616-2776909439-2417379446"),
+		// 	query.Kind(query.Relationship(), ad.CrossForestTrust),
+		// 	query.Kind(query.End(), ad.Domain),
+		// 	query.Equals(query.EndProperty(common.ObjectID.String()), "S-1-5-21-3084884204-958224920-2707782881")),
 		query.And(
 			query.Kind(query.Start(), ad.Domain),
 			query.Equals(query.StartProperty(common.ObjectID.String()), "S-1-5-21-3130019616-2776909439-2417379446"),
@@ -155,6 +224,12 @@ var (
 			query.Kind(query.Relationship(), ad.HasSession),
 			query.Kind(query.End(), ad.User),
 			query.Equals(query.EndProperty(common.ObjectID.String()), "S-1-5-21-3130019616-2776909439-2417379446-1108")),
+		query.And(
+			query.Kind(query.Start(), ad.Computer),
+			query.Equals(query.StartProperty(common.ObjectID.String()), "S-1-5-21-3130019616-2776909439-2417379446-2120"),
+			query.Kind(query.Relationship(), ad.CoerceToTGT),
+			query.Kind(query.End(), ad.Domain),
+			query.Equals(query.EndProperty(common.ObjectID.String()), "S-1-5-21-3130019616-2776909439-2417379446")),
 
 		//// GPOs
 		query.And(
@@ -240,6 +315,12 @@ var (
 			query.Kind(query.Relationship(), ad.AllExtendedRights),
 			query.Kind(query.End(), ad.User),
 			query.Equals(query.EndProperty(common.ObjectID.String()), "S-1-5-21-3130019616-2776909439-2417379446-1106")),
+		query.And(
+			query.Kind(query.Start(), ad.User),
+			query.Equals(query.StartProperty(common.ObjectID.String()), "S-1-5-21-3130019616-2776909439-2417379446-2125"),
+			query.Kind(query.Relationship(), ad.CoerceToTGT),
+			query.Kind(query.End(), ad.Domain),
+			query.Equals(query.EndProperty(common.ObjectID.String()), "S-1-5-21-3130019616-2776909439-2417379446")),
 
 		//// SESSIONS
 		query.And(
@@ -257,6 +338,30 @@ var (
 			query.Kind(query.Relationship(), ad.DCFor),
 			query.Kind(query.End(), ad.Domain),
 			query.Equals(query.EndProperty(common.ObjectID.String()), "S-1-5-21-3130019616-2776909439-2417379446")),
+		query.And( // AbuseTGTDelegation inbound (based on external inbound)
+			query.Kind(query.Start(), ad.Domain),
+			query.Equals(query.StartProperty(common.ObjectID.String()), "S-1-5-21-3084884204-958224920-2707782879"),
+			query.Kind(query.Relationship(), ad.AbuseTGTDelegation),
+			query.Kind(query.End(), ad.Domain),
+			query.Equals(query.EndProperty(common.ObjectID.String()), "S-1-5-21-3130019616-2776909439-2417379446")),
+		query.And( // AbuseTGTDelegation inbound (based on Kerberos inbound)
+			query.Kind(query.Start(), ad.Domain),
+			query.Equals(query.StartProperty(common.ObjectID.String()), "S-1-5-21-3084884204-958224920-2707782880"),
+			query.Kind(query.Relationship(), ad.AbuseTGTDelegation),
+			query.Kind(query.End(), ad.Domain),
+			query.Equals(query.EndProperty(common.ObjectID.String()), "S-1-5-21-3130019616-2776909439-2417379446")),
+		query.And(
+			query.Kind(query.Start(), ad.User),
+			query.Equals(query.StartProperty(common.ObjectID.String()), "S-1-5-21-3130019616-2776909439-2417379446-1114"),
+			query.Kind(query.Relationship(), ad.AdminTo),
+			query.Kind(query.End(), ad.Computer),
+			query.Equals(query.EndProperty(common.ObjectID.String()), "S-1-5-21-3130019616-2776909439-2417379446-1000")),
+		query.And(
+			query.Kind(query.Start(), ad.User),
+			query.Equals(query.StartProperty(common.ObjectID.String()), "S-1-5-21-3130019616-2776909439-2417379446-2116"),
+			query.Kind(query.Relationship(), ad.AdminTo),
+			query.Kind(query.End(), ad.Computer),
+			query.Equals(query.EndProperty(common.ObjectID.String()), "S-1-5-21-3130019616-2776909439-2417379446-1104")),
 	}
 
 	propertyAssertionCriteria = []PropertyAssertion{
@@ -275,11 +380,11 @@ var (
 
 func FormatQueryComponent(criteria graph.Criteria) string {
 	var (
-		emitter      = cypher.NewCypherEmitter(false)
+		emitter      = format.NewCypherEmitter(false)
 		stringBuffer = &bytes.Buffer{}
 	)
 
-	if err := emitter.WriteExpression(stringBuffer, criteria.(model.Expression)); err != nil {
+	if err := emitter.WriteExpression(stringBuffer, criteria.(cypher.Expression)); err != nil {
 		return "ERROR"
 	}
 

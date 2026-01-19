@@ -17,7 +17,7 @@
 package model
 
 import (
-	"github.com/specterops/bloodhound/src/database/types/nan"
+	"github.com/specterops/bloodhound/cmd/api/src/database/types/nan"
 )
 
 type ADDataQualityStat struct {
@@ -33,6 +33,7 @@ type ADDataQualityStat struct {
 	EnterpriseCAs          int         `json:"enterprisecas" gorm:"column:enterprisecas"`
 	NTAuthStores           int         `json:"ntauthstores" gorm:"column:ntauthstores"`
 	CertTemplates          int         `json:"certtemplates" gorm:"column:certtemplates"`
+	IssuancePolicies       int         `json:"issuancepolicies" gorm:"column:issuancepolicies"`
 	ACLs                   int         `json:"acls" gorm:"column:acls"`
 	Sessions               int         `json:"sessions"`
 	Relationships          int         `json:"relationships"`
@@ -56,6 +57,7 @@ type ADDataQualityAggregation struct {
 	EnterpriseCAs          int     `json:"enterprisecas" gorm:"column:enterprisecas"`
 	NTAuthStores           int     `json:"ntauthstores" gorm:"column:ntauthstores"`
 	CertTemplates          int     `json:"certtemplates" gorm:"column:certtemplates"`
+	IssuancePolicies       int     `json:"issuancepolicies" gorm:"column:issuancepolicies"`
 	Acls                   int     `json:"acls" gorm:"column:acls"`
 	Sessions               int     `json:"sessions"`
 	Relationships          int     `json:"relationships"`

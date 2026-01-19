@@ -14,17 +14,17 @@
 //
 // SPDX-License-Identifier: Apache-2.0
 
+import { Box, Link } from '@mui/material';
 import { FC } from 'react';
-import { Link, Box } from '@mui/material';
 
 const References: FC = () => {
     return (
-        <Box sx={{ overflowX: 'auto' }}>
-            <Link target='_blank' rel='noopener' href='https://wald0.com/?p=179'>
+        <Box className='overflow-x-auto'>
+            <Link target='_blank' rel='noopener noreferrer' href='https://wald0.com/?p=179'>
                 https://wald0.com/?p=179
             </Link>
             <br />
-            <Link target='_blank' rel='noopener' href='https://blog.cptjesus.com/posts/bloodhound15'>
+            <Link target='_blank' rel='noopener noreferrer' href='https://blog.cptjesus.com/posts/bloodhound15'>
                 https://blog.cptjesus.com/posts/bloodhound15
             </Link>
         </Box>

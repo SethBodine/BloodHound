@@ -18,12 +18,12 @@ import { Link, Typography } from '@mui/material';
 import { FC } from 'react';
 import { EdgeInfoProps } from '../index';
 
-const LinuxAbuse: FC<EdgeInfoProps> = ({ sourceName, sourceType }) => {
+const LinuxAbuse: FC<EdgeInfoProps> = () => {
     return (
         <>
             <Typography variant='body2'>
                 To abuse this permission, use{' '}
-                <Link target='_blank' rel='noopener' href='https://github.com/ShutdownRepo/pywhisker'>
+                <Link target='_blank' rel='noopener noreferrer' href='https://github.com/ShutdownRepo/pywhisker'>
                     pyWhisker
                 </Link>
                 .

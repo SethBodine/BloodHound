@@ -18,19 +18,17 @@ package auth
 
 import (
 	"context"
+	"errors"
 	"fmt"
+	"log/slog"
 	"net/http"
 	"strings"
 
-	"github.com/specterops/bloodhound/src/ctx"
-	"github.com/specterops/bloodhound/src/database"
-
-	"github.com/specterops/bloodhound/log"
-
-	"github.com/specterops/bloodhound/src/api"
-	"github.com/specterops/bloodhound/src/auth"
-
-	"github.com/specterops/bloodhound/src/config"
+	"github.com/specterops/bloodhound/cmd/api/src/api"
+	"github.com/specterops/bloodhound/cmd/api/src/auth"
+	"github.com/specterops/bloodhound/cmd/api/src/config"
+	"github.com/specterops/bloodhound/cmd/api/src/ctx"
+	"github.com/specterops/bloodhound/cmd/api/src/database"
 )
 
 type LoginResource struct {
@@ -50,14 +48,14 @@ func NewLoginResource(cfg config.Configuration, authenticator api.Authenticator,
 
 func (s LoginResource) loginSecret(loginRequest api.LoginRequest, response http.ResponseWriter, request *http.Request) {
 	if loginDetails, err := s.authenticator.LoginWithSecret(request.Context(), loginRequest); err != nil {
-		if err == api.ErrInvalidAuth || err == api.ErrNoUserSecret {
+		if errors.Is(err, api.ErrInvalidAuth) || errors.Is(err, api.ErrNoUserSecret) {
 			api.WriteErrorResponse(request.Context(), api.BuildErrorResponse(http.StatusUnauthorized, api.ErrorResponseDetailsAuthenticationInvalid, request), response)
-		} else if err == auth.ErrorInvalidOTP {
+		} else if errors.Is(err, auth.ErrInvalidOTP) {
 			api.WriteErrorResponse(request.Context(), api.BuildErrorResponse(http.StatusBadRequest, api.ErrorResponseDetailsOTPInvalid, request), response)
-		} else if err == api.ErrUserDisabled {
+		} else if errors.Is(err, api.ErrUserDisabled) {
 			api.WriteErrorResponse(request.Context(), api.BuildErrorResponse(http.StatusForbidden, err.Error(), request), response)
 		} else {
-			log.Errorf("Error during authentication for request ID %s: %v", ctx.RequestID(request), err)
+			slog.ErrorContext(request.Context(), fmt.Sprintf("Error during authentication for request ID %s: %v", ctx.RequestID(request), err))
 			api.WriteErrorResponse(request.Context(), api.BuildErrorResponse(http.StatusInternalServerError, api.ErrorResponseDetailsInternalServerError, request), response)
 		}
 	} else {
@@ -71,18 +69,21 @@ func (s LoginResource) loginSecret(loginRequest api.LoginRequest, response http.
 
 func (s LoginResource) Login(response http.ResponseWriter, request *http.Request) {
 	var loginRequest api.LoginRequest
-
 	if err := api.ReadJSONRequestPayloadLimited(&loginRequest, request); err != nil {
 		api.WriteErrorResponse(request.Context(), api.BuildErrorResponse(http.StatusBadRequest, err.Error(), request), response)
-	} else if err = s.patchEULAAcceptance(request.Context(), loginRequest.Username); err != nil {
-		api.HandleDatabaseError(request, response, err)
 	} else {
-		switch strings.ToLower(loginRequest.LoginMethod) {
-		case auth.ProviderTypeSecret:
-			s.loginSecret(loginRequest, response, request)
+		// Trim leading and trailing spaces from the username
+		loginRequest.Username = strings.TrimSpace(loginRequest.Username)
 
-		default:
-			api.WriteErrorResponse(request.Context(), api.BuildErrorResponse(http.StatusBadRequest, fmt.Sprintf("Login method %s is not supported.", loginRequest.LoginMethod), request), response)
+		if err = s.patchEULAAcceptance(request.Context(), loginRequest.Username); err != nil {
+			api.HandleDatabaseError(request, response, err)
+		} else {
+			switch strings.ToLower(loginRequest.LoginMethod) {
+			case auth.ProviderTypeSecret:
+				s.loginSecret(loginRequest, response, request)
+			default:
+				api.WriteErrorResponse(request.Context(), api.BuildErrorResponse(http.StatusBadRequest, fmt.Sprintf("Login method %s is not supported.", loginRequest.LoginMethod), request), response)
+			}
 		}
 	}
 }

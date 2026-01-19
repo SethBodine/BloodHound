@@ -17,11 +17,13 @@
 package azure
 
 import (
-	"github.com/specterops/bloodhound/dawgs/graph"
-	"github.com/specterops/bloodhound/dawgs/ops"
-	"github.com/specterops/bloodhound/dawgs/query"
-	"github.com/specterops/bloodhound/graphschema/azure"
-	"github.com/specterops/bloodhound/log"
+	"fmt"
+	"log/slog"
+
+	"github.com/specterops/bloodhound/packages/go/graphschema/azure"
+	"github.com/specterops/dawgs/graph"
+	"github.com/specterops/dawgs/ops"
+	"github.com/specterops/dawgs/query"
 )
 
 func FilterEntityActiveAssignments() graph.Criteria {
@@ -30,6 +32,10 @@ func FilterEntityActiveAssignments() graph.Criteria {
 
 func FilterEntityPIMAssignments() graph.Criteria {
 	return query.KindIn(query.Relationship(), azure.Grant, azure.GrantSelf, azure.MemberOf)
+}
+
+func FilterRoleApprovers() graph.Criteria {
+	return query.KindIn(query.Relationship(), azure.AZRoleApprover, azure.MemberOf)
 }
 
 func FilterExecutionPrivileges() graph.Criteria {
@@ -71,6 +77,14 @@ func FilterGroupMembers() graph.Criteria {
 	)
 }
 
+func FilterRoleAssignableGroupMembersUsers() graph.Criteria {
+	return query.And(
+		query.Kind(query.Relationship(), azure.MemberOf),
+		query.Kind(query.Start(), azure.User),
+		query.Equals(query.EndProperty(azure.IsAssignableToRole.String()), "true"),
+	)
+}
+
 func FilterContains() graph.Criteria {
 	return query.KindIn(query.Relationship(), azure.Contains)
 }
@@ -94,9 +108,8 @@ func roleDescentFilter(ctx *ops.TraversalContext, segment *graph.PathSegment) bo
 			// If the group does not allow role inheritance then we do not inherit the terminal role
 			if isRoleAssignable, err := end.Properties.Get(azure.IsAssignableToRole.String()).Bool(); err != nil || !isRoleAssignable {
 				if graph.IsErrPropertyNotFound(err) {
-					log.Errorf("Node %d is missing property %s", end.ID, azure.IsAssignableToRole)
+					slog.Warn(fmt.Sprintf("Node %d is missing property %s", end.ID, azure.IsAssignableToRole))
 				}
-
 				acceptDescendent = false
 				return false
 			}

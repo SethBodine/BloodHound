@@ -17,12 +17,13 @@
 package api
 
 import (
+	"errors"
 	"fmt"
 	"slices"
 	"sort"
 	"strconv"
 
-	"github.com/specterops/bloodhound/src/model"
+	"github.com/specterops/bloodhound/cmd/api/src/model"
 )
 
 type AssetGroupMember struct {
@@ -43,7 +44,7 @@ type AssetGroupMembers []AssetGroupMember
 func (s AssetGroupMembers) SortBy(columns []string) (AssetGroupMembers, error) {
 	for _, column := range columns {
 		if column == "" {
-			return AssetGroupMembers{}, fmt.Errorf(ErrorResponseEmptySortParameter)
+			return AssetGroupMembers{}, errors.New(ErrorResponseEmptySortParameter)
 		}
 
 		descending := false
@@ -78,7 +79,7 @@ func (s AssetGroupMembers) SortBy(columns []string) (AssetGroupMembers, error) {
 				return s[i].Name < s[j].Name
 			})
 		default:
-			return AssetGroupMembers{}, fmt.Errorf(ErrorResponseDetailsNotSortable)
+			return AssetGroupMembers{}, errors.New(ErrorResponseDetailsNotSortable)
 		}
 
 		if descending {
@@ -94,11 +95,11 @@ func (s AssetGroupMembers) Filter(filterMap model.QueryParameterFilterMap) (Asse
 	result := s
 	for column, filters := range filterMap {
 		if validPredicates, err := s.GetValidFilterPredicatesAsStrings(column); err != nil {
-			return AssetGroupMembers{}, fmt.Errorf("%s: %s", model.ErrorResponseDetailsColumnNotFilterable, column)
+			return AssetGroupMembers{}, fmt.Errorf("%s: %s", model.ErrResponseDetailsColumnNotFilterable, column)
 		} else {
 			for _, filter := range filters {
 				if !slices.Contains(validPredicates, string(filter.Operator)) {
-					return AssetGroupMembers{}, fmt.Errorf("%s: %s, %s", model.ErrorResponseDetailsFilterPredicateNotSupported, column, string(filter.Operator))
+					return AssetGroupMembers{}, fmt.Errorf("%s: %s, %s", model.ErrResponseDetailsFilterPredicateNotSupported, column, string(filter.Operator))
 				} else if conditional, err := s.BuildFilteringConditional(column, filter.Operator, filter.Value); err != nil {
 					return AssetGroupMembers{}, err
 				} else {
@@ -113,67 +114,72 @@ func (s AssetGroupMembers) Filter(filterMap model.QueryParameterFilterMap) (Asse
 func (s AssetGroupMembers) BuildFilteringConditional(column string, operator model.FilterOperator, value string) (func(t AssetGroupMember) bool, error) {
 	switch column {
 	case "object_id":
-		if operator == model.Equals {
+		switch operator {
+		case model.Equals:
 			return func(t AssetGroupMember) bool { return t.ObjectID == value }, nil
-		} else if operator == model.NotEquals {
+		case model.NotEquals:
 			return func(t AssetGroupMember) bool { return t.ObjectID != value }, nil
-		} else {
-			return nil, fmt.Errorf(ErrorResponseDetailsFilterPredicateNotSupported)
+		default:
+			return nil, errors.New(ErrorResponseDetailsFilterPredicateNotSupported)
 		}
 	case "primary_kind":
-		if operator == model.Equals {
+		switch operator {
+		case model.Equals:
 			return func(t AssetGroupMember) bool { return t.PrimaryKind == value }, nil
-		} else if operator == model.NotEquals {
+		case model.NotEquals:
 			return func(t AssetGroupMember) bool { return t.PrimaryKind != value }, nil
-		} else {
-			return nil, fmt.Errorf(ErrorResponseDetailsFilterPredicateNotSupported)
+		default:
+			return nil, errors.New(ErrorResponseDetailsFilterPredicateNotSupported)
 		}
 	case "environment_id":
-		if operator == model.Equals {
+		switch operator {
+		case model.Equals:
 			return func(t AssetGroupMember) bool { return t.EnvironmentID == value }, nil
-		} else if operator == model.NotEquals {
+		case model.NotEquals:
 			return func(t AssetGroupMember) bool { return t.EnvironmentID != value }, nil
-		} else {
-			return nil, fmt.Errorf(ErrorResponseDetailsFilterPredicateNotSupported)
+		default:
+			return nil, errors.New(ErrorResponseDetailsFilterPredicateNotSupported)
 		}
 	case "environment_kind":
-		if operator == model.Equals {
+		switch operator {
+		case model.Equals:
 			return func(t AssetGroupMember) bool { return t.EnvironmentKind == value }, nil
-		} else if operator == model.NotEquals {
+		case model.NotEquals:
 			return func(t AssetGroupMember) bool { return t.EnvironmentKind != value }, nil
-		} else {
-			return nil, fmt.Errorf(ErrorResponseDetailsFilterPredicateNotSupported)
+		default:
+			return nil, errors.New(ErrorResponseDetailsFilterPredicateNotSupported)
 		}
 	case "name":
-		if operator == model.Equals {
+		switch operator {
+		case model.Equals:
 			return func(t AssetGroupMember) bool { return t.Name == value }, nil
-		} else if operator == model.NotEquals {
+		case model.NotEquals:
 			return func(t AssetGroupMember) bool { return t.Name != value }, nil
-		} else {
-			return nil, fmt.Errorf(ErrorResponseDetailsFilterPredicateNotSupported)
+		default:
+			return nil, errors.New(ErrorResponseDetailsFilterPredicateNotSupported)
 		}
 	case "asset_group_id":
 		if intValue, err := strconv.Atoi(value); err != nil {
-			return nil, fmt.Errorf(ErrorResponseDetailsBadQueryParameterFilters)
+			return nil, errors.New(ErrorResponseDetailsBadQueryParameterFilters)
 		} else if operator == model.Equals {
 			return func(t AssetGroupMember) bool { return t.AssetGroupID == intValue }, nil
 		} else if operator == model.NotEquals {
 			return func(t AssetGroupMember) bool { return t.AssetGroupID != intValue }, nil
 		} else {
-			return nil, fmt.Errorf(ErrorResponseDetailsFilterPredicateNotSupported)
+			return nil, errors.New(ErrorResponseDetailsFilterPredicateNotSupported)
 		}
 	case "custom_member":
 		if boolValue, err := strconv.ParseBool(value); err != nil {
-			return nil, fmt.Errorf(ErrorResponseDetailsBadQueryParameterFilters)
+			return nil, errors.New(ErrorResponseDetailsBadQueryParameterFilters)
 		} else if operator == model.Equals {
 			return func(t AssetGroupMember) bool { return t.CustomMember == boolValue }, nil
 		} else if operator == model.NotEquals {
 			return func(t AssetGroupMember) bool { return t.CustomMember != boolValue }, nil
 		} else {
-			return nil, fmt.Errorf(ErrorResponseDetailsFilterPredicateNotSupported)
+			return nil, errors.New(ErrorResponseDetailsFilterPredicateNotSupported)
 		}
 	default:
-		return nil, fmt.Errorf(ErrorResponseDetailsColumnNotFilterable)
+		return nil, errors.New(ErrorResponseDetailsColumnNotFilterable)
 	}
 }
 

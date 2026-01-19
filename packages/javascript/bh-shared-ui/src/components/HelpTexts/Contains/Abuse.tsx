@@ -14,11 +14,19 @@
 //
 // SPDX-License-Identifier: Apache-2.0
 
-import { FC } from 'react';
 import { Typography } from '@mui/material';
+import { FC } from 'react';
 
 const Abuse: FC = () => {
-    return <Typography variant='body2'>There is no abuse info related to this edge.</Typography>;
+    return (
+        <>
+            <Typography variant='body2'>
+                Permissions on the parent of a child object may enable compromise of the child object through inherited
+                ACEs or linked GPOs.
+            </Typography>
+            <Typography variant='body2'>See the inbound edges on the parent object for details.</Typography>
+        </>
+    );
 };
 
 export default Abuse;

@@ -18,6 +18,7 @@ package bootstrap
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"os"
 	"os/signal"
@@ -25,21 +26,17 @@ import (
 	"syscall"
 	"time"
 
-	iso8601 "github.com/channelmeter/iso8601duration"
-	"github.com/specterops/bloodhound/dawgs/graph"
-	"github.com/specterops/bloodhound/log"
-	"github.com/specterops/bloodhound/src/auth"
-	"github.com/specterops/bloodhound/src/config"
-	"github.com/specterops/bloodhound/src/database"
-	"github.com/specterops/bloodhound/src/database/types/null"
-	"github.com/specterops/bloodhound/src/migrations"
-	"github.com/specterops/bloodhound/src/model"
-	"github.com/specterops/bloodhound/src/model/appcfg"
+	"github.com/specterops/bloodhound/cmd/api/src/auth"
+	"github.com/specterops/bloodhound/cmd/api/src/config"
+	"github.com/specterops/bloodhound/cmd/api/src/database"
+	"github.com/specterops/bloodhound/cmd/api/src/database/types/null"
+	"github.com/specterops/bloodhound/cmd/api/src/model"
+	"github.com/specterops/bloodhound/cmd/api/src/model/appcfg"
 )
 
 const (
 	DefaultServerShutdownTimeout = time.Minute
-	ContentSecurityPolicy        = "default-src 'self'; script-src 'self' 'unsafe-inline'; style-src 'self' 'unsafe-inline'; img-src 'self' data: blob:; font-src 'self' data:;"
+	ContentSecurityPolicy        = "default-src 'self'; script-src 'self' %s 'unsafe-inline'; style-src 'self' 'unsafe-inline'; img-src 'self' %s data: blob:; font-src 'self' data:;"
 )
 
 func NewDaemonContext(parentCtx context.Context) context.Context {
@@ -60,13 +57,8 @@ func NewDaemonContext(parentCtx context.Context) context.Context {
 	return daemonContext
 }
 
-// MigrateGraph runs migrations for the graph database
-func MigrateGraph(ctx context.Context, db graph.Database, schema graph.Schema) error {
-	return migrations.NewGraphMigrator(db).Migrate(ctx, schema)
-}
-
 // MigrateDB runs database migrations on PG
-func MigrateDB(ctx context.Context, cfg config.Configuration, db database.Database) error {
+func MigrateDB(ctx context.Context, cfg config.Configuration, db database.Database, defaultAdminFunc func() (config.DefaultAdminConfiguration, error)) error {
 	if err := db.Migrate(ctx); err != nil {
 		return err
 	}
@@ -77,7 +69,23 @@ func MigrateDB(ctx context.Context, cfg config.Configuration, db database.Databa
 		return nil
 	}
 
-	secretDigester := cfg.Crypto.Argon2.NewDigester()
+	return CreateDefaultAdmin(ctx, cfg, db, defaultAdminFunc)
+}
+
+func CreateDefaultAdmin(ctx context.Context, cfg config.Configuration, db database.Database, defaultAdminFunction func() (config.DefaultAdminConfiguration, error)) error {
+	var (
+		secretDigester = cfg.Crypto.Argon2.NewDigester()
+		needsLog       = false
+	)
+
+	if cfg.DefaultAdmin.Password == "" {
+		needsLog = true
+		if admin, err := defaultAdminFunction(); err != nil {
+			return fmt.Errorf("error in setup initializing auth secret: %w", err)
+		} else {
+			cfg.DefaultAdmin = admin
+		}
+	}
 
 	if roles, err := db.GetAllRoles(ctx, "", model.SQLFilter{}); err != nil {
 		return fmt.Errorf("error while attempting to fetch user roles: %w", err)
@@ -86,15 +94,24 @@ func MigrateDB(ctx context.Context, cfg config.Configuration, db database.Databa
 	} else if adminRole, found := roles.FindByName(auth.RoleAdministrator); !found {
 		return fmt.Errorf("unable to find admin role")
 	} else {
+		if existingUser, err := db.LookupUser(ctx, cfg.DefaultAdmin.PrincipalName); !errors.Is(err, database.ErrNotFound) && err != nil {
+			return fmt.Errorf("unable to lookup existing admin user: %w", err)
+		} else if err == nil {
+			if err := db.DeleteUser(ctx, existingUser); err != nil {
+				return fmt.Errorf("unable to delete exisiting admin user: %s: %w", existingUser.PrincipalName, err)
+			}
+		}
+
 		var (
 			adminUser = model.User{
 				Roles: model.Roles{
 					adminRole,
 				},
-				PrincipalName: cfg.DefaultAdmin.PrincipalName,
-				EmailAddress:  null.NewString(cfg.DefaultAdmin.EmailAddress, true),
-				FirstName:     null.NewString(cfg.DefaultAdmin.FirstName, true),
-				LastName:      null.NewString(cfg.DefaultAdmin.LastName, true),
+				PrincipalName:   cfg.DefaultAdmin.PrincipalName,
+				EmailAddress:    null.NewString(cfg.DefaultAdmin.EmailAddress, true),
+				FirstName:       null.NewString(cfg.DefaultAdmin.FirstName, true),
+				LastName:        null.NewString(cfg.DefaultAdmin.LastName, true),
+				AllEnvironments: true,
 			}
 
 			authSecret = model.AuthSecret{
@@ -105,24 +122,24 @@ func MigrateDB(ctx context.Context, cfg config.Configuration, db database.Databa
 
 		if cfg.DefaultAdmin.ExpireNow {
 			authSecret.ExpiresAt = time.Time{}
-		} else if defaultWindow, err := iso8601.FromString(appcfg.DefaultPasswordExpirationWindow); err != nil {
-			return fmt.Errorf("unable to parse default password expiration window: %w", err)
 		} else {
-			authSecret.ExpiresAt = time.Now().Add(defaultWindow.ToDuration())
+			authSecret.ExpiresAt = time.Now().Add(appcfg.GetPasswordExpiration(ctx, db))
 		}
 
 		if _, err := db.InitializeSecretAuth(ctx, adminUser, authSecret); err != nil {
-			return fmt.Errorf("error in database while initalizing auth: %w", err)
-		} else {
+			return fmt.Errorf("error in database while initializing auth: %w", err)
+		} else if needsLog {
 			passwordMsg := fmt.Sprintf("# Initial Password Set To:    %s    #", cfg.DefaultAdmin.Password)
 			paddingString := strings.Repeat(" ", len(passwordMsg)-2)
 			borderString := strings.Repeat("#", len(passwordMsg))
 
-			log.Infof("%s", borderString)
-			log.Infof("#%s#", paddingString)
-			log.Infof("%s", passwordMsg)
-			log.Infof("#%s#", paddingString)
-			log.Infof("%s", borderString)
+			fmt.Println(borderString)
+			fmt.Printf("#%s#\n", paddingString)
+			fmt.Println(passwordMsg)
+			fmt.Printf("#%s#\n", paddingString)
+			fmt.Println(borderString)
+		} else {
+			fmt.Printf("Password has been set from existing config or environment variable\n")
 		}
 	}
 

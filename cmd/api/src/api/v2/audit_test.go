@@ -23,18 +23,18 @@ import (
 	"net/url"
 	"testing"
 
-	"github.com/specterops/bloodhound/headers"
-	"github.com/specterops/bloodhound/mediatypes"
-	"github.com/specterops/bloodhound/src/api"
+	"github.com/specterops/bloodhound/cmd/api/src/api"
+	"github.com/specterops/bloodhound/packages/go/headers"
+	"github.com/specterops/bloodhound/packages/go/mediatypes"
 
 	"github.com/gorilla/mux"
 	"github.com/stretchr/testify/require"
 	"go.uber.org/mock/gomock"
 
-	v2 "github.com/specterops/bloodhound/src/api/v2"
-	"github.com/specterops/bloodhound/src/database/mocks"
+	v2 "github.com/specterops/bloodhound/cmd/api/src/api/v2"
+	"github.com/specterops/bloodhound/cmd/api/src/database/mocks"
 
-	"github.com/specterops/bloodhound/src/model"
+	"github.com/specterops/bloodhound/cmd/api/src/model"
 )
 
 func TestResources_ListAuditLogs_SortingError(t *testing.T) {
@@ -221,7 +221,7 @@ func TestResources_ListAuditLogs_Filtered(t *testing.T) {
 	)
 	defer mockCtrl.Finish()
 
-	mockDB.EXPECT().ListAuditLogs(gomock.Any(), gomock.Any(), gomock.Any(), gomock.Any(), gomock.Any(), "", model.SQLFilter{SQLString: "actor_name = ?", Params: []any{"foo"}}).Return(model.AuditLogs{}, 1000, nil)
+	mockDB.EXPECT().ListAuditLogs(gomock.Any(), gomock.Any(), gomock.Any(), gomock.Any(), gomock.Any(), "", model.SQLFilter{SQLString: "actor_name = 'foo'"}).Return(model.AuditLogs{}, 1000, nil)
 	endpoint := "/api/v2/audit"
 
 	if req, err := http.NewRequest("GET", endpoint, nil); err != nil {
@@ -239,5 +239,126 @@ func TestResources_ListAuditLogs_Filtered(t *testing.T) {
 		response := httptest.NewRecorder()
 		router.ServeHTTP(response, req)
 		require.Equal(t, http.StatusOK, response.Code)
+	}
+}
+
+func TestResources_ListAuditLogs_SkipAndOffset(t *testing.T) {
+	var (
+		mockCtrl  = gomock.NewController(t)
+		mockDB    = mocks.NewMockDatabase(mockCtrl)
+		resources = v2.Resources{DB: mockDB}
+	)
+	defer mockCtrl.Finish()
+
+	mockDB.EXPECT().ListAuditLogs(gomock.Any(), gomock.Any(), gomock.Any(), 10, gomock.Any(), "", model.SQLFilter{}).Return(model.AuditLogs{}, 1000, nil)
+
+	endpoint := "/api/v2/audit"
+
+	if req, err := http.NewRequest("GET", endpoint, nil); err != nil {
+		t.Fatal(err)
+	} else {
+		q := url.Values{}
+		q.Add("skip", "10")
+		q.Add("offset", "20")
+
+		req.Header.Set(headers.ContentType.String(), mediatypes.ApplicationJson.String())
+		req.URL.RawQuery = q.Encode()
+
+		router := mux.NewRouter()
+		router.HandleFunc(endpoint, resources.ListAuditLogs).Methods("GET")
+
+		response := httptest.NewRecorder()
+		router.ServeHTTP(response, req)
+		require.Equal(t, http.StatusOK, response.Code)
+	}
+}
+
+func TestResources_ListAuditLogs_OnlyOffset(t *testing.T) {
+	var (
+		mockCtrl  = gomock.NewController(t)
+		mockDB    = mocks.NewMockDatabase(mockCtrl)
+		resources = v2.Resources{DB: mockDB}
+	)
+	defer mockCtrl.Finish()
+
+	mockDB.EXPECT().ListAuditLogs(gomock.Any(), gomock.Any(), gomock.Any(), 20, gomock.Any(), "", model.SQLFilter{}).Return(model.AuditLogs{}, 1000, nil)
+
+	endpoint := "/api/v2/audit"
+
+	if req, err := http.NewRequest("GET", endpoint, nil); err != nil {
+		t.Fatal(err)
+	} else {
+		q := url.Values{}
+		q.Add("offset", "20")
+
+		req.Header.Set(headers.ContentType.String(), mediatypes.ApplicationJson.String())
+		req.URL.RawQuery = q.Encode()
+
+		router := mux.NewRouter()
+		router.HandleFunc(endpoint, resources.ListAuditLogs).Methods("GET")
+
+		response := httptest.NewRecorder()
+		router.ServeHTTP(response, req)
+		require.Equal(t, http.StatusOK, response.Code)
+	}
+}
+
+func TestResources_ListAuditLogs_OnlySkip(t *testing.T) {
+	var (
+		mockCtrl  = gomock.NewController(t)
+		mockDB    = mocks.NewMockDatabase(mockCtrl)
+		resources = v2.Resources{DB: mockDB}
+	)
+	defer mockCtrl.Finish()
+
+	// Expect skip to be 5 (from "skip" parameter)
+	mockDB.EXPECT().ListAuditLogs(gomock.Any(), gomock.Any(), gomock.Any(), 5, gomock.Any(), gomock.Any(), gomock.Any()).Return(model.AuditLogs{}, 1000, nil)
+
+	endpoint := "/api/v2/audit"
+
+	if req, err := http.NewRequest("GET", endpoint, nil); err != nil {
+		t.Fatal(err)
+	} else {
+		q := url.Values{}
+		q.Add("skip", "5")
+
+		req.Header.Set(headers.ContentType.String(), mediatypes.ApplicationJson.String())
+		req.URL.RawQuery = q.Encode()
+
+		router := mux.NewRouter()
+		router.HandleFunc(endpoint, resources.ListAuditLogs).Methods("GET")
+
+		response := httptest.NewRecorder()
+		router.ServeHTTP(response, req)
+		require.Equal(t, http.StatusOK, response.Code)
+	}
+}
+
+func TestResources_ListAuditLogs_InvalidSkip(t *testing.T) {
+	var (
+		mockCtrl  = gomock.NewController(t)
+		mockDB    = mocks.NewMockDatabase(mockCtrl)
+		resources = v2.Resources{DB: mockDB}
+	)
+	defer mockCtrl.Finish()
+
+	endpoint := "/api/v2/audit"
+
+	if req, err := http.NewRequest("GET", endpoint, nil); err != nil {
+		t.Fatal(err)
+	} else {
+		q := url.Values{}
+		q.Add("skip", "invalid")
+
+		req.Header.Set(headers.ContentType.String(), mediatypes.ApplicationJson.String())
+		req.URL.RawQuery = q.Encode()
+
+		router := mux.NewRouter()
+		router.HandleFunc(endpoint, resources.ListAuditLogs).Methods("GET")
+
+		response := httptest.NewRecorder()
+		router.ServeHTTP(response, req)
+		require.Equal(t, http.StatusBadRequest, response.Code)
+		require.Contains(t, response.Body.String(), "query parameter \\\"skip\\\" is malformed")
 	}
 }

@@ -14,9 +14,29 @@
 //
 // SPDX-License-Identifier: Apache-2.0
 
-import { getNodeRadius } from 'src/rendering/utils/utils';
+import { getLabelBoundsFromContext, getNodeRadius, LabelBoundsParams } from 'src/rendering/utils/utils';
 
-describe('Getting the node radius for use in our rendering programs', () => {
+describe('getLabelBoundsFromContext', () => {
+    it('returns bounds for text rendered to canvas', () => {
+        const mockMetric = {
+            actualBoundingBoxAscent: 10,
+            actualBoundingBoxDescent: 15,
+            width: 20,
+        } as TextMetrics;
+        const mockContext = new CanvasRenderingContext2D();
+        mockContext.measureText = vi.fn(() => mockMetric);
+        const mockParams: LabelBoundsParams = {
+            inverseSqrtZoomRatio: 0.75,
+            label: 'Test string',
+            position: { x: 50, y: 75 },
+            size: 10,
+        };
+
+        expect(getLabelBoundsFromContext(mockContext, mockParams)).toEqual([57.625, 59.5, 26, 31]);
+    });
+});
+
+describe('getNodeRadius', () => {
     const inverseSqrtZoomRatio = 1;
     test('If for some reason the node size is not defined return 1 as a default', () => {
         const nodeSize = undefined;

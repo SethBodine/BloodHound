@@ -18,6 +18,7 @@ package api
 
 import (
 	"bytes"
+	"context"
 	"crypto/hmac"
 	"crypto/sha256"
 	"encoding/base64"
@@ -28,45 +29,10 @@ import (
 	"os"
 	"time"
 
-	"github.com/specterops/bloodhound/headers"
+	"github.com/specterops/bloodhound/packages/go/headers"
 )
 
-const ErrorTemplateHMACSignature string = "unable to compute hmac signature: %w"
-
-// tee takes a source reader and two writers. The function reads from the source until exhaustion. Each read is written
-// serially to both writers.
-func tee(reader io.Reader, outA, outB io.Writer) error {
-	// Ignore readers that are nil to begin with. This covers the case where a request is being signed but contains
-	// no body.
-	if reader == nil {
-		return nil
-	}
-
-	// Internal read buffer for splitting out to the other writers
-	buffer := make([]byte, 4096)
-
-	for {
-		read, err := reader.Read(buffer)
-
-		if read > 0 {
-			if _, err := outA.Write(buffer[:read]); err != nil {
-				return err
-			}
-
-			if _, err := outB.Write(buffer[:read]); err != nil {
-				return err
-			}
-		}
-
-		if err != nil {
-			if err != io.EOF {
-				return err
-			}
-
-			return nil
-		}
-	}
-}
+const ErrTemplateHMACSignature string = "unable to compute hmac signature: %w"
 
 func NewSelfDestructingTempFile(dir, prefix string) (*SelfDestructingTempFile, error) {
 	if file, err := os.CreateTemp(dir, prefix); err != nil {
@@ -128,9 +94,9 @@ func (s *SelfDestructingTempFile) Name() string {
 
 // NewRequestSignature generates the BloodHound request signature using the provided hash function.
 // NOTE: The given io.Reader will be read to EOF. Consider using io.TeeReader so that the body may be read again after the signature has been created.
-func NewRequestSignature(hasher func() hash.Hash, key string, datetime string, requestMethod string, requestURI string, body io.Reader) ([]byte, error) {
+func NewRequestSignature(ctx context.Context, hasher func() hash.Hash, key string, datetime string, requestMethod string, requestURI string, body io.Reader) ([]byte, error) {
 	if hasher == nil {
-		return nil, fmt.Errorf(ErrorTemplateHMACSignature, fmt.Errorf("hasher must not be nil"))
+		return nil, fmt.Errorf(ErrTemplateHMACSignature, fmt.Errorf("hasher must not be nil"))
 	}
 
 	digester := hmac.New(hasher, []byte(key))
@@ -142,7 +108,7 @@ func NewRequestSignature(hasher func() hash.Hash, key string, datetime string, r
 	// Example: GET /api/v2/test/resource HTTP/1.1
 	// Signature Component: GET/api/v2/test/resource
 	if _, err := digester.Write([]byte(requestMethod + requestURI)); err != nil {
-		return nil, fmt.Errorf(ErrorTemplateHMACSignature, err)
+		return nil, fmt.Errorf(ErrTemplateHMACSignature, err)
 	}
 
 	// DateKey is the next HMAC digest link in the signature chain. This encodes the RFC3339 formatted datetime
@@ -155,7 +121,7 @@ func NewRequestSignature(hasher func() hash.Hash, key string, datetime string, r
 	digester = hmac.New(hasher, digester.Sum(nil))
 
 	if _, err := digester.Write([]byte(datetime[:13])); err != nil {
-		return nil, fmt.Errorf(ErrorTemplateHMACSignature, err)
+		return nil, fmt.Errorf(ErrTemplateHMACSignature, err)
 	}
 
 	// Body signing is the last HMAC digest link in the signature chain. This encodes the request body as part of
@@ -164,9 +130,14 @@ func NewRequestSignature(hasher func() hash.Hash, key string, datetime string, r
 	// digester.
 	digester = hmac.New(hasher, digester.Sum(nil))
 
+	// check context before processing body
+	if err := ctx.Err(); err != nil {
+		return nil, err
+	}
+
 	if body != nil {
 		if _, err := io.Copy(digester, body); err != nil {
-			return nil, fmt.Errorf(ErrorTemplateHMACSignature, err)
+			return nil, fmt.Errorf(ErrTemplateHMACSignature, err)
 		}
 	}
 
@@ -186,7 +157,7 @@ func SignRequestAtTime(hasher func() hash.Hash, id string, token string, datetim
 		tee = io.TeeReader(request.Body, &buffer)
 	}
 
-	if signature, err := NewRequestSignature(hasher, token, datetimeFormatted, request.Method, request.URL.Path, tee); err != nil {
+	if signature, err := NewRequestSignature(request.Context(), hasher, token, datetimeFormatted, request.Method, request.URL.Path, tee); err != nil {
 		return err
 	} else {
 		// Overwrite the request body reader if the request body wasn't nil
@@ -207,17 +178,4 @@ func SignRequestAtTime(hasher func() hash.Hash, id string, token string, datetim
 // may only be valid for a maximum period of 2 hours.
 func SignRequest(tokenID, token string, request *http.Request) error {
 	return SignRequestAtTime(sha256.New, tokenID, token, time.Now(), request)
-}
-
-type readerDelegatedCloser struct {
-	source io.Reader
-	closer io.Closer
-}
-
-func (s readerDelegatedCloser) Read(p []byte) (n int, err error) {
-	return s.source.Read(p)
-}
-
-func (s readerDelegatedCloser) Close() error {
-	return s.closer.Close()
 }

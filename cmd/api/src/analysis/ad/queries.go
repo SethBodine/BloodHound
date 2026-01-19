@@ -19,20 +19,20 @@ package ad
 import (
 	"context"
 	"fmt"
+	"log/slog"
 	"sync"
 
 	"github.com/gofrs/uuid"
-	"github.com/specterops/bloodhound/analysis"
-	adAnalysis "github.com/specterops/bloodhound/analysis/ad"
-	"github.com/specterops/bloodhound/dawgs/graph"
-	"github.com/specterops/bloodhound/dawgs/ops"
-	"github.com/specterops/bloodhound/dawgs/query"
-	"github.com/specterops/bloodhound/graphschema/ad"
-	"github.com/specterops/bloodhound/graphschema/common"
-	"github.com/specterops/bloodhound/log"
-	"github.com/specterops/bloodhound/src/database/types/nan"
-	"github.com/specterops/bloodhound/src/model"
-	"github.com/specterops/bloodhound/src/queries"
+	"github.com/specterops/bloodhound/cmd/api/src/database/types/nan"
+	"github.com/specterops/bloodhound/cmd/api/src/model"
+	"github.com/specterops/bloodhound/cmd/api/src/queries"
+	"github.com/specterops/bloodhound/packages/go/analysis"
+	adAnalysis "github.com/specterops/bloodhound/packages/go/analysis/ad"
+	"github.com/specterops/bloodhound/packages/go/graphschema/ad"
+	"github.com/specterops/bloodhound/packages/go/graphschema/common"
+	"github.com/specterops/dawgs/graph"
+	"github.com/specterops/dawgs/ops"
+	"github.com/specterops/dawgs/query"
 )
 
 func ValidateDomains(ctx context.Context, queries queries.Graph, objectIDs ...string) ([]string, error) {
@@ -69,7 +69,7 @@ func GraphStats(ctx context.Context, db graph.Database) (model.ADDataQualityStat
 		adStats     = model.ADDataQualityStats{}
 		runID       string
 
-		kinds = graph.Kinds{ad.User, ad.Group, ad.Computer, ad.Container, ad.OU, ad.GPO, ad.AIACA, ad.RootCA, ad.EnterpriseCA, ad.NTAuthStore, ad.CertTemplate}
+		kinds = ad.NodeKinds()
 	)
 
 	if newUUID, err := uuid.NewV4(); err != nil {
@@ -87,7 +87,7 @@ func GraphStats(ctx context.Context, db graph.Database) (model.ADDataQualityStat
 		} else {
 			for _, domain := range domains {
 				if domainSID, err := domain.Properties.Get(common.ObjectID.String()).String(); err != nil {
-					log.Errorf("Domain node %d does not have a valid %s property: %v", domain.ID, common.ObjectID, err)
+					slog.ErrorContext(ctx, fmt.Sprintf("Domain node %d does not have a valid %s property: %v", domain.ID, common.ObjectID, err))
 				} else {
 					aggregation.Domains++
 
@@ -106,6 +106,11 @@ func GraphStats(ctx context.Context, db graph.Database) (model.ADDataQualityStat
 
 					for _, kind := range kinds {
 						innerKind := kind
+
+						if innerKind == ad.Entity {
+							continue
+						}
+
 						if err := operation.SubmitReader(func(ctx context.Context, tx graph.Transaction, _ chan<- any) error {
 							if count, err := tx.Nodes().Filterf(func() graph.Criteria {
 								return query.And(
@@ -160,6 +165,13 @@ func GraphStats(ctx context.Context, db graph.Database) (model.ADDataQualityStat
 								case ad.CertTemplate:
 									stat.CertTemplates = int(count)
 									aggregation.CertTemplates += int(count)
+
+								case ad.IssuancePolicy:
+									stat.IssuancePolicies = int(count)
+									aggregation.IssuancePolicies += int(count)
+
+								case ad.Domain:
+									// Do nothing. Only ADDataQualityAggregation stats have domain stats and the domain stats are handled in the outer domain loop
 								}
 
 								mutex.Unlock()

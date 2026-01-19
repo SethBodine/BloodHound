@@ -14,8 +14,8 @@
 //
 // SPDX-License-Identifier: Apache-2.0
 
-import { FC } from 'react';
 import { Link, Typography } from '@mui/material';
+import { FC } from 'react';
 
 const Abuse: FC = () => {
     return (
@@ -26,14 +26,14 @@ const Abuse: FC = () => {
             <Typography variant='body2'>Via PowerZure</Typography>
             <Link
                 target='_blank'
-                rel='noopener'
+                rel='noopener noreferrer'
                 href='https://powerzure.readthedocs.io/en/latest/Functions/operational.html#get-azurekeyvaultcontent'>
                 Get-AzureKeyVaultContent
             </Link>
             <br />
             <Link
                 target='_blank'
-                rel='noopener'
+                rel='noopener noreferrer'
                 href='https://powerzure.readthedocs.io/en/latest/Functions/operational.html#export-azurekeyvaultcontent'>
                 Export-AzureKeyVaultcontent
             </Link>

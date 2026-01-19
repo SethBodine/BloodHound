@@ -14,23 +14,19 @@
 //
 // SPDX-License-Identifier: Apache-2.0
 
-import { FC } from 'react';
 import { Alert, Box, Skeleton, Typography } from '@mui/material';
-import { apiClient } from '../../../utils/api';
+import { FC } from 'react';
 import { EdgeInfoProps } from '..';
-import { useQuery } from 'react-query';
-import VirtualizedNodeList, { VirtualizedNodeListItem } from '../../VirtualizedNodeList';
+import { EdgeInfoItems, useEdgeInfoItems } from '../../../hooks/useExploreGraph/useEdgeInfoItems';
+import VirtualizedNodeList from '../../VirtualizedNodeList';
 
 const Composition: FC<EdgeInfoProps> = ({ sourceDBId, targetDBId, edgeName }) => {
-    const { data, isLoading, isError } = useQuery(['edgeComposition', sourceDBId, targetDBId, edgeName], ({ signal }) =>
-        apiClient.getEdgeComposition(sourceDBId!, targetDBId!, edgeName!).then((result) => result.data)
-    );
-
-    const nodesArray: VirtualizedNodeListItem[] = Object.values(data?.data.nodes || {}).map((node) => ({
-        name: node.label,
-        objectId: node.objectId,
-        kind: node.kind,
-    }));
+    const { isLoading, isError, nodesArray } = useEdgeInfoItems({
+        sourceDBId,
+        targetDBId,
+        edgeName,
+        type: EdgeInfoItems['composition'],
+    });
 
     return (
         <>

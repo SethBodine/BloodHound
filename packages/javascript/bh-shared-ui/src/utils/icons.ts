@@ -14,39 +14,41 @@
 //
 // SPDX-License-Identifier: Apache-2.0
 
+import { icon, IconParams, library } from '@fortawesome/fontawesome-svg-core';
 import {
+    faArrowsLeftRightToLine,
+    faBolt,
     faBox,
     faBoxOpen,
-    faBolt,
+    faBuilding,
+    faClipboardCheck,
     faClipboardList,
     faCloud,
+    faCog,
     faCube,
     faCubes,
     faDesktop,
-    faCog,
     faGlobe,
+    faIdCard,
     faKey,
+    faLandmark,
     faList,
     faLock,
     faObjectGroup,
+    faQuestion,
     faRobot,
+    fas,
     faServer,
     faSitemap,
+    faStore,
     faUser,
     faUsers,
     faWindowRestore,
     IconDefinition,
-    faGem,
-    faPlus,
-    faQuestion,
-    faMinus,
-    faLandmark,
-    faStore,
-    faIdCard,
-    faArrowsLeftRightToLine,
-    faBuilding,
 } from '@fortawesome/free-solid-svg-icons';
 import { ActiveDirectoryNodeKind, AzureNodeKind } from '../graphSchema';
+
+library.add(fas);
 
 export type IconInfo = {
     icon: IconDefinition;
@@ -58,17 +60,16 @@ export type IconDictionary = {
     [index: string]: IconInfo;
 };
 
-export type GlyphDictionary = {
-    [index: string]: IconInfo & { iconColor: string };
-};
+export const NODE_SCALE = '0.6';
+export const GLYPH_SCALE = '0.5';
 
-export enum GlyphKind {
-    TIER_ZERO,
-    EXPAND,
-    COLLAPSE,
-}
+export const DEFAULT_ICON_COLOR = '#000000';
+export const DEFAULT_ICON_BACKGROUND_COLOR = '#FFFFFF';
 
-export const NODE_ICON: IconDictionary = {
+export const DEFAULT_GLYPH_BACKGROUND_COLOR = DEFAULT_ICON_COLOR;
+export const DEFAULT_GLYPH_COLOR = DEFAULT_ICON_BACKGROUND_COLOR;
+
+export const NODE_ICONS: IconDictionary = {
     [ActiveDirectoryNodeKind.User]: {
         icon: faUser,
         color: '#17E625',
@@ -117,6 +118,11 @@ export const NODE_ICON: IconDictionary = {
     [ActiveDirectoryNodeKind.CertTemplate]: {
         icon: faIdCard,
         color: '#B153F3',
+    },
+
+    [ActiveDirectoryNodeKind.IssuancePolicy]: {
+        icon: faClipboardCheck,
+        color: '#99B2DD',
     },
 
     [ActiveDirectoryNodeKind.OU]: {
@@ -223,25 +229,45 @@ export const NODE_ICON: IconDictionary = {
     },
 };
 
-export const GLYPHS: GlyphDictionary = {
-    [GlyphKind.TIER_ZERO]: {
-        icon: faGem,
-        color: '#000000',
-        iconColor: '#FFFFFF',
-    },
-    [GlyphKind.EXPAND]: {
-        icon: faPlus,
-        color: '#FFFFFF',
-        iconColor: '#000000',
-    },
-    [GlyphKind.COLLAPSE]: {
-        icon: faMinus,
-        color: '#FFFFFF',
-        iconColor: '#000000',
-    },
-};
-
 export const UNKNOWN_ICON: IconInfo = {
     icon: faQuestion,
     color: '#FFFFFF',
+};
+
+export const OPEN_GRAPH_ENVIRONMENT = 'circle-nodes';
+
+/**
+ * Returns icon metadata for a given icon name.
+ *
+ * This function checks the user-provided customIcons dictionary first,
+ * allowing users to override the default icon definitions. If no override
+ * is found, it falls back to the built-in NODE_ICON map. If the icon name
+ * is unrecognized, a question-mark fallback icon is returned.
+ */
+export const GetIconInfo = (iconName: string, customIcons: IconDictionary): IconInfo => {
+    if (iconName in customIcons) {
+        return customIcons[iconName];
+    }
+
+    if (iconName in NODE_ICONS) {
+        return NODE_ICONS[iconName];
+    }
+
+    return UNKNOWN_ICON;
+};
+
+export const getModifiedSvgUrlFromIcon = (iconDefinition: IconDefinition, iconParams?: IconParams): string => {
+    const params = iconParams ?? { styles: { 'transform-origin': 'center' } };
+
+    const modifiedIcon = icon(iconDefinition, {
+        styles: { 'transform-origin': 'center', ...params.styles },
+    });
+
+    const svg = modifiedIcon.html[0];
+
+    const amendedSvg = svg.replace(/<svg/, '<svg width="200" height="200"');
+
+    const blob = new Blob([amendedSvg], { type: 'image/svg+xml' });
+
+    return URL.createObjectURL(blob);
 };

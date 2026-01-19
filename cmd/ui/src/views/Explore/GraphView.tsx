@@ -14,248 +14,276 @@
 //
 // SPDX-License-Identifier: Apache-2.0
 
-import { Box, Grid, Link, useTheme } from '@mui/material';
 import {
-    EdgeInfoState,
-    GraphButtonProps,
+    BaseExploreLayoutOptions,
+    ContextMenuPrivilegeZonesEnabled,
+    ExploreTable,
+    FeatureFlag,
+    GraphControls,
     GraphProgress,
-    NoDataAlert,
-    setEdgeInfoOpen,
-    setSelectedEdge,
-    useAvailableDomains,
+    GraphViewErrorAlert,
+    ManageColumnsComboBoxOption,
+    NodeClickInfo,
+    WebGLDisabledAlert,
+    baseGraphLayouts,
+    defaultGraphLayout,
+    glyphUtils,
+    isNode,
+    isWebGLEnabled,
+    makeStoreMapFromColumnOptions,
+    useCustomNodeKinds,
+    useExploreParams,
+    useExploreSelectedItem,
+    useExploreTableAutoDisplay,
+    useFeatureFlag,
+    useGraphHasData,
+    useKeybindings,
+    useTagGlyphs,
+    useTheme,
+    useToggle,
 } from 'bh-shared-ui';
 import { MultiDirectedGraph } from 'graphology';
-import { random } from 'graphology-layout';
-import forceAtlas2 from 'graphology-layout-forceatlas2';
 import { Attributes } from 'graphology-types';
-import { GraphNodes } from 'js-client-library';
-import isEmpty from 'lodash/isEmpty';
-import { FC, useEffect, useState } from 'react';
-import { Link as RouterLink } from 'react-router-dom';
+import { FC, useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { SigmaNodeEventPayload } from 'sigma/sigma';
-import { GraphButtonOptions } from 'src/components/GraphButtons/GraphButtons';
+import { NoDataFileUploadDialogWithLinks } from 'src/components/NoDataFileUploadDialogWithLinks';
 import SigmaChart from 'src/components/SigmaChart';
-import { setEntityInfoOpen, setSelectedNode } from 'src/ducks/entityinfo/actions';
-import { GraphState } from 'src/ducks/explore/types';
-import { setAssetGroupEdit } from 'src/ducks/global/actions';
-import { ROUTE_ADMINISTRATION_FILE_INGEST } from 'src/ducks/global/routes';
-import { GlobalOptionsState } from 'src/ducks/global/types';
-import { discardChanges } from 'src/ducks/tierzero/actions';
-import { RankDirection } from 'src/hooks/useLayoutDagre/useLayoutDagre';
-import useToggle from 'src/hooks/useToggle';
+import { setExploreLayout, setIsExploreTableSelected, setSelectedExploreTableColumns } from 'src/ducks/global/actions';
+import { useSigmaExploreGraph } from 'src/hooks/useSigmaExploreGraph';
 import { useAppDispatch, useAppSelector } from 'src/store';
-import { transformFlatGraphResponse } from 'src/utils';
-import EdgeInfoPane from 'src/views/Explore/EdgeInfo/EdgeInfoPane';
-import EntityInfoPanel from 'src/views/Explore/EntityInfo/EntityInfoPanel';
-import ExploreSearch from 'src/views/Explore/ExploreSearch';
-import usePrompt from 'src/views/Explore/NavigationAlert';
-import { initGraphEdges, initGraphNodes } from 'src/views/Explore/utils';
+import { initGraph } from 'src/views/Explore/utils';
 import ContextMenu from './ContextMenu/ContextMenu';
+import ExploreSearch from './ExploreSearch/ExploreSearch';
+import GraphItemInformationPanel from './GraphItemInformationPanel';
+import { transformIconDictionary } from './svgIcons';
 
 const GraphView: FC = () => {
     /* Hooks */
-    const theme = useTheme();
     const dispatch = useAppDispatch();
 
-    const graphState: GraphState = useAppSelector((state) => state.explore);
-    const opts: GlobalOptionsState = useAppSelector((state) => state.global.options);
-    const formIsDirty = Object.keys(useAppSelector((state) => state.tierzero).changelog).length > 0;
+    const theme = useTheme();
+
+    const graphHasDataQuery = useGraphHasData();
+    const graphQuery = useSigmaExploreGraph();
+
+    const { searchType } = useExploreParams();
+    const { selectedItem, setSelectedItem, selectedItemQuery, clearSelectedItem, previousSelectedItem } =
+        useExploreSelectedItem();
 
     const [graphologyGraph, setGraphologyGraph] = useState<MultiDirectedGraph<Attributes, Attributes, Attributes>>();
-    const [currentNodes, setCurrentNodes] = useState<GraphNodes>({});
-
-    const [currentSearchOpen, toggleCurrentSearch] = useToggle(false);
-    const { data, isLoading, isError } = useAvailableDomains();
-
     const [contextMenu, setContextMenu] = useState<{ mouseX: number; mouseY: number } | null>(null);
 
-    useEffect(() => {
-        let items: any = graphState.chartProps.items;
-        if (!items) return;
-        // `items` may be empty, or it may contain an empty `nodes` object
-        if (isEmpty(items) || isEmpty(items.nodes)) items = transformFlatGraphResponse(items);
+    const sigmaChartRef = useRef<any>(null);
 
-        const graph = new MultiDirectedGraph();
-        const nodeSize = 25;
+    const darkMode = useAppSelector((state) => state.global.view.darkMode);
+    const exploreLayout = useAppSelector((state) => state.global.view.exploreLayout);
+    const selectedColumns = useAppSelector((state) => state.global.view.selectedExploreTableColumns);
+    const isExploreTableSelected = useAppSelector((state) => state.global.view.isExploreTableSelected);
 
-        initGraphNodes(graph, items.nodes, nodeSize);
-        initGraphEdges(graph, items.edges);
+    const customIconsQuery = useCustomNodeKinds({ select: transformIconDictionary });
 
-        setCurrentNodes(items.nodes);
+    const { data: pzFeatureFlag } = useFeatureFlag('tier_management_engine');
+    const tagGlyphs = useTagGlyphs(glyphUtils, darkMode);
 
-        random.assign(graph, { scale: 1000 });
+    const autoDisplayTableEnabled = !exploreLayout && !isExploreTableSelected;
+    const [autoDisplayTable, setAutoDisplayTable] = useExploreTableAutoDisplay(autoDisplayTableEnabled);
+    // TODO: incorporate into larger hook with auto display table logic
+    const displayTable = searchType === 'cypher' && (isExploreTableSelected || autoDisplayTable);
 
-        forceAtlas2.assign(graph, {
-            iterations: 128,
-            settings: {
-                scalingRatio: 1000,
-                barnesHutOptimize: true,
-            },
-        });
-        setGraphologyGraph(graph);
-    }, [graphState.chartProps.items]);
+    const [showNodeLabels, toggleShowNodeLabels] = useToggle(true);
+    const [showEdgeLabels, toggleShowEdgeLabels] = useToggle(true);
 
-    useEffect(() => {
-        if (opts.assetGroupEdit !== null) {
-            dispatch(setAssetGroupEdit(null));
-        }
-    }, [opts.assetGroupEdit, dispatch]);
+    const isWebGLEnabledMemo = useMemo(() => isWebGLEnabled(), []);
 
-    //Clear the changelog when leaving the explore page.
-    useEffect(() => {
-        return () => {
-            formIsDirty && dispatch(discardChanges());
+    const graphOptions = useMemo(() => {
+        return {
+            theme,
+            darkMode,
+            customIcons: customIconsQuery?.data ?? {},
+            hideNodes: displayTable,
+            tagGlyphs,
+            pzFeatureFlagEnabled: pzFeatureFlag?.enabled,
         };
-    }, [dispatch, formIsDirty]);
+    }, [theme, darkMode, customIconsQuery.data, displayTable, tagGlyphs, pzFeatureFlag?.enabled]);
 
-    usePrompt(
-        'You will lose any unsaved changes if you navigate away from this page without saving. Continue?',
-        formIsDirty
+    // Initialize graph data for rendering with sigmajs
+    useEffect(() => {
+        if (!graphQuery.data) return;
+
+        const graphData = graphQuery.data;
+
+        if (graphOptions.hideNodes) {
+            setGraphologyGraph(undefined);
+        } else {
+            const graph = initGraph(graphData, graphOptions);
+            setGraphologyGraph(graph);
+        }
+    }, [graphQuery.data, graphOptions]);
+
+    /* useCallback Event Handlers must appear before return statement */
+    const handleContextMenu = useCallback(
+        (event: SigmaNodeEventPayload) => {
+            setSelectedItem(event.node);
+            setContextMenu(contextMenu === null ? { mouseX: event.event.x, mouseY: event.event.y } : null);
+        },
+        [contextMenu, setContextMenu, setSelectedItem]
     );
 
-    if (isLoading) {
+    /* Passthrough function to munge shared component callback shape into a Sigma Node event-shaped object */
+    const handleKebabMenuClick = useCallback(
+        (nodeInfo: NodeClickInfo) => {
+            if (!nodeInfo.id) return;
+            handleContextMenu({ event: { x: nodeInfo.x, y: nodeInfo.y }, node: nodeInfo.id } as SigmaNodeEventPayload);
+        },
+        [handleContextMenu]
+    );
+
+    const { setExploreParams, exploreSearchTab } = useExploreParams();
+
+    useKeybindings({
+        KeyC: () => {
+            if (exploreSearchTab !== 'cypher') {
+                setExploreParams({
+                    exploreSearchTab: 'cypher',
+                });
+            }
+        },
+        Slash: () => {
+            if (exploreSearchTab !== 'node') {
+                setExploreParams({ exploreSearchTab: 'node' });
+            }
+        },
+        KeyP: () => {
+            if (exploreSearchTab !== 'pathfinding') {
+                setExploreParams({ exploreSearchTab: 'pathfinding' });
+            }
+        },
+        KeyT: () => {
+            dispatch(setIsExploreTableSelected(!isExploreTableSelected));
+        },
+        KeyI: () => {
+            const entries = Object.entries(graphQuery?.data || {});
+            const onlyOneNodeInResults = entries.length === 1;
+
+            if (selectedItem) {
+                setSelectedItem('');
+                // If there is exactly one node and no curretly selected it, select this node
+            } else if (onlyOneNodeInResults) {
+                const onlyNodeKey = entries?.[0]?.[0];
+
+                setSelectedItem(onlyNodeKey);
+            } else {
+                setSelectedItem(previousSelectedItem || '');
+            }
+        },
+    });
+
+    if (graphHasDataQuery.isLoading) {
         return (
-            <Box sx={{ position: 'relative', height: '100%', width: '100%', overflow: 'hidden' }} data-testid='explore'>
-                <GraphProgress loading={isLoading} />
-            </Box>
+            <div className='relative h-full w-full overflow-hidden' data-testid='explore'>
+                <GraphProgress loading={graphHasDataQuery.isLoading} />
+            </div>
         );
     }
 
-    const dataCollectionLink = (
-        <Link
-            target='_blank'
-            href={'https://support.bloodhoundenterprise.io/hc/en-us/sections/17274904083483-BloodHound-CE-Collection'}>
-            Data Collection
-        </Link>
-    );
+    if (graphHasDataQuery.isError) return <GraphViewErrorAlert />;
 
-    const fileIngestLink = (
-        <Link component={RouterLink} to={ROUTE_ADMINISTRATION_FILE_INGEST}>
-            File Ingest
-        </Link>
-    );
-
-    if (isError) throw new Error();
-
-    if (!data.length)
-        return (
-            <Box position={'relative'} height={'100%'} width={'100%'} overflow={'hidden'}>
-                <NoDataAlert dataCollectionLink={dataCollectionLink} fileIngestLink={fileIngestLink} />
-            </Box>
-        );
-
-    const options: GraphButtonOptions = { standard: true, sequential: true };
-
-    const nonLayoutButtons: GraphButtonProps[] = [
-        {
-            displayText: 'Search Current Results',
-            onClick: toggleCurrentSearch,
-            disabled: currentSearchOpen,
-        },
-    ];
-
-    const findNodeAndSelect = (id: string) => {
-        const selectedItem = graphState.chartProps.items?.[id];
-        if (selectedItem?.data?.nodetype) {
-            dispatch(setSelectedEdge(null));
-            dispatch(
-                setSelectedNode({
-                    id: selectedItem.data.objectid,
-                    type: selectedItem.data.nodetype,
-                    name: selectedItem.data.name,
-                    graphId: id,
-                })
-            );
-        }
-    };
+    if (!isWebGLEnabledMemo) return <WebGLDisabledAlert />;
 
     /* Event Handlers */
-    const onClickNode = (id: string) => {
-        dispatch(setEdgeInfoOpen(false));
-        dispatch(setEntityInfoOpen(true));
-
-        findNodeAndSelect(id);
-    };
-
-    const handleContextMenu = (event: SigmaNodeEventPayload) => {
-        setContextMenu(contextMenu === null ? { mouseX: event.event.x, mouseY: event.event.y } : null);
-
-        const nodeId = event.node;
-
-        findNodeAndSelect(nodeId);
-    };
-
     const handleCloseContextMenu = () => {
         setContextMenu(null);
     };
 
+    const handleManageColumnsChange = (columnOptions: ManageColumnsComboBoxOption[]) => {
+        const newItems = makeStoreMapFromColumnOptions(columnOptions);
+
+        dispatch(setSelectedExploreTableColumns(newItems));
+    };
+
+    const handleLayoutChange = (layout: BaseExploreLayoutOptions) => {
+        if (layout === 'table') {
+            dispatch(setIsExploreTableSelected(true));
+            return;
+        }
+
+        dispatch(setExploreLayout(layout));
+        dispatch(setIsExploreTableSelected(false));
+
+        if (layout === 'standard') sigmaChartRef.current?.runStandardLayout();
+
+        if (layout === 'sequential') sigmaChartRef.current?.runSequentialLayout();
+    };
+
     return (
-        <Box sx={{ position: 'relative', height: '100%', width: '100%', overflow: 'hidden' }} data-testid='explore'>
+        <div
+            className='relative h-full w-full overflow-hidden'
+            data-testid='explore'
+            onContextMenu={(e) => e.preventDefault()}>
             <SigmaChart
-                rankDirection={RankDirection.LEFT_RIGHT}
-                options={options}
                 graph={graphologyGraph}
-                currentNodes={currentNodes}
-                onClickNode={onClickNode}
-                nonLayoutButtons={nonLayoutButtons}
-                isCurrentSearchOpen={currentSearchOpen}
-                toggleCurrentSearch={toggleCurrentSearch}
+                highlightedItem={selectedItem}
+                onClickEdge={setSelectedItem}
+                onClickNode={setSelectedItem}
+                onClickStage={clearSelectedItem}
                 handleContextMenu={handleContextMenu}
+                showNodeLabels={showNodeLabels}
+                showEdgeLabels={showEdgeLabels}
+                ref={sigmaChartRef}
             />
 
-            <ContextMenu contextMenu={contextMenu} handleClose={handleCloseContextMenu} />
+            <div className='absolute top-0 h-full p-4 flex gap-2 justify-between flex-col pointer-events-none'>
+                <ExploreSearch />
+                <GraphControls
+                    isExploreTableSelected={isExploreTableSelected}
+                    layoutOptions={baseGraphLayouts}
+                    selectedLayout={exploreLayout ?? defaultGraphLayout}
+                    onLayoutChange={handleLayoutChange}
+                    showNodeLabels={showNodeLabels}
+                    onToggleNodeLabels={toggleShowNodeLabels}
+                    showEdgeLabels={showEdgeLabels}
+                    onToggleEdgeLabels={toggleShowEdgeLabels}
+                    jsonData={graphQuery.data}
+                    onReset={() => sigmaChartRef.current?.resetCamera()}
+                    currentNodes={graphQuery.data?.nodes}
+                    onSearchedNodeClick={(node) => {
+                        node.id && setSelectedItem(node.id);
+                        sigmaChartRef?.current?.zoomTo(node.id);
+                    }}
+                />
+            </div>
+            <GraphItemInformationPanel />
+            <FeatureFlag
+                flagKey='tier_management_engine'
+                enabled={
+                    <ContextMenuPrivilegeZonesEnabled
+                        contextMenu={isNode(selectedItemQuery.data) ? contextMenu : null}
+                        onClose={handleCloseContextMenu}
+                    />
+                }
+                disabled={
+                    <ContextMenu
+                        contextMenu={isNode(selectedItemQuery.data) ? contextMenu : null}
+                        handleClose={handleCloseContextMenu}
+                    />
+                }
+            />
 
-            <Grid
-                container
-                direction='row'
-                justifyContent='space-between'
-                alignItems='flex-start'
-                sx={{
-                    position: 'relative',
-                    margin: theme.spacing(2, 2, 0),
-                    pointerEvents: 'none',
-                    height: '100%',
-                }}>
-                <GridItems />
-            </Grid>
-            <GraphProgress loading={graphState.loading} />
-        </Box>
-    );
-};
-
-const GridItems = () => {
-    const selectedNode = useAppSelector((state) => state.entityinfo.selectedNode);
-
-    const columnsDefault = { xs: 6, md: 5, lg: 4, xl: 3 };
-    const cypherSearchColumns = { xs: 6, md: 6, lg: 6, xl: 4 };
-
-    const edgeInfoState: EdgeInfoState = useAppSelector((state) => state.edgeinfo);
-    const [columns, setColumns] = useState(columnsDefault);
-    const theme = useTheme();
-
-    const columnStyles = { height: '100%' };
-
-    const infoPanelStyles = {
-        margin: theme.spacing(0, 4, 2, 2),
-        maxHeight: '95%',
-    };
-
-    const handleCypherTab = (isCypherEditorActive: boolean) => {
-        isCypherEditorActive ? setColumns(cypherSearchColumns) : setColumns(columnsDefault);
-    };
-
-    return [
-        <Grid item {...columns} sx={columnStyles} key={'exploreSearch'}>
-            <ExploreSearch handleColumns={handleCypherTab} />
-        </Grid>,
-        <Grid item {...columnsDefault} sx={columnStyles} key={'info'}>
-            {edgeInfoState.open ? (
-                <EdgeInfoPane sx={infoPanelStyles} selectedEdge={edgeInfoState.selectedEdge} />
-            ) : (
-                <EntityInfoPanel sx={infoPanelStyles} selectedNode={selectedNode} />
+            <GraphProgress loading={graphQuery.isLoading} />
+            <NoDataFileUploadDialogWithLinks open={!graphHasDataQuery.data} />
+            {displayTable && (
+                <ExploreTable
+                    selectedColumns={selectedColumns}
+                    onManageColumnsChange={handleManageColumnsChange}
+                    onKebabMenuClick={handleKebabMenuClick}
+                    onClose={() => {
+                        setAutoDisplayTable(false);
+                        dispatch(setIsExploreTableSelected(false));
+                    }}
+                />
             )}
-        </Grid>,
-    ];
+        </div>
+    );
 };
 
 export default GraphView;

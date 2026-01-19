@@ -16,12 +16,19 @@
 
 package common
 
-import "pkg.specterops.io/schemas/bh/types:types"
+import (
+	"pkg.specterops.io/schemas/bh/types:types"
+	"pkg.specterops.io/schemas/bh/ad:ad"
+	"pkg.specterops.io/schemas/bh/azure:azure"
+	"list"
+)
 
 // Exported requirements
 Properties: [...types.#StringEnum]
 NodeKinds: [...types.#Kind]
 RelationshipKinds: [...types.#Kind]
+InboundRelationshipKinds: [...types.#Kind]
+OutboundRelationshipKinds: [...types.#Kind]
 
 // Property name enumerations
 ObjectID: types.#StringEnum & {
@@ -90,8 +97,15 @@ UserTags: types.#StringEnum & {
 LastSeen: types.#StringEnum & {
 	symbol:         "LastSeen"
 	schema:         "common"
-	name:           "Last Collected by BloodHound"
+	name:           "Last Seen by BloodHound"
 	representation: "lastseen"
+}
+
+LastCollected: types.#StringEnum & {
+	symbol:         "LastCollected"
+	schema:         "common"
+	name:           "Last Collected by BloodHound"
+	representation: "lastcollected"
 }
 
 WhenCreated: types.#StringEnum & {
@@ -136,6 +150,20 @@ IsInherited: types.#StringEnum & {
 	representation: "isinherited"
 }
 
+CompositionID: types.#StringEnum & {
+	symbol: 		"CompositionID"
+	schema: 		"common"
+	name: 			"Composition ID"
+	representation: "compositionid"
+}
+// Used to specify which icon to display for a node in the graph UI
+PrimaryKind: types.#StringEnum & {
+	symbol:         "PrimaryKind"
+	schema:         "common"
+	name:           "Primary Kind"
+	representation: "primarykind"
+}
+
 Properties: [
 	ObjectID,
 	Name,
@@ -147,12 +175,15 @@ Properties: [
 	SystemTags,
 	UserTags,
 	LastSeen,
+	LastCollected,
 	WhenCreated,
 	Enabled,
 	PasswordLastSet,
 	Title,
 	Email,
 	IsInherited,
+	CompositionID,
+	PrimaryKind
 ]
 
 // Kinds
@@ -168,3 +199,6 @@ NodeKinds: [
 
 RelationshipKinds: [
 ]
+
+InboundRelationshipKinds: list.Concat([ad.InboundRelationshipKinds, azure.InboundOutboundRelationshipKinds])
+OutboundRelationshipKinds: list.Concat([ad.OutboundRelationshipKinds, azure.InboundOutboundRelationshipKinds])

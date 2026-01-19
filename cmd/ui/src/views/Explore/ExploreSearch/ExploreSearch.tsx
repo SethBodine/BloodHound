@@ -1,4 +1,4 @@
-// Copyright 2023 Specter Ops, Inc.
+// Copyright 2025 Specter Ops, Inc.
 //
 // Licensed under the Apache License, Version 2.0
 // you may not use this file except in compliance with the License.
@@ -16,14 +16,27 @@
 
 import { faCode, faDirections, faMinus, faPlus, faSearch } from '@fortawesome/free-solid-svg-icons';
 import { FontAwesomeIcon } from '@fortawesome/react-fontawesome';
-import { Box, Collapse, Paper, Tab, Tabs, Theme, useMediaQuery, useTheme } from '@mui/material';
+import { Tab, Tabs } from '@mui/material';
 import makeStyles from '@mui/styles/makeStyles';
-import { CYPHER_SEARCH, Icon, PATHFINDING_SEARCH, PRIMARY_SEARCH, searchbarActions } from 'bh-shared-ui';
+import {
+    CypherSearch,
+    ExploreQueryParams,
+    ExploreSearchTab,
+    Icon,
+    MappedStringLiteral,
+    NodeSearch,
+    PathfindingSearch,
+    cn,
+    encodeCypherQuery,
+    useCypherSearch,
+    useExploreParams,
+    useNodeSearch,
+    usePathfindingFilters,
+    usePathfindingSearch,
+} from 'bh-shared-ui';
 import React, { useState } from 'react';
+import { setAutoRunQueries } from 'src/ducks/global/actions';
 import { useAppDispatch, useAppSelector } from 'src/store';
-import CypherSearch from './CypherSearch';
-import NodeSearch from './NodeSearch';
-import PathfindingSearch from './PathfindingSearch';
 
 const useStyles = makeStyles((theme) => ({
     menuButton: {
@@ -36,124 +49,192 @@ const useStyles = makeStyles((theme) => ({
         height: '40px',
         boxSizing: 'border-box',
         padding: theme.spacing(2),
-        fontSize: theme.typography.fontSize,
-        color: theme.palette.common.black,
     },
 }));
 
-const tabNameMap = {
-    primary: 0,
-    secondary: 1,
+const tabMap = {
+    node: 0,
+    pathfinding: 1,
     cypher: 2,
-    tierZero: 3,
+} satisfies MappedStringLiteral<ExploreSearchTab, number>;
+
+const tabs = [
+    {
+        label: 'Search',
+        icon: faSearch,
+    },
+    {
+        label: 'Pathfinding',
+        icon: faDirections,
+    },
+    {
+        label: 'Cypher',
+        icon: faCode,
+    },
+];
+
+const getTab = (exploreSearchTab: ExploreQueryParams['exploreSearchTab']) => {
+    if (exploreSearchTab && exploreSearchTab in tabMap) return exploreSearchTab as keyof typeof tabMap;
+    return 'node';
 };
 
-interface ExploreSearchProps {
-    handleColumns?: (isCypherEditorActive: boolean) => void;
-}
-
-const ExploreSearch = ({ handleColumns }: ExploreSearchProps) => {
+const ExploreSearch: React.FC = () => {
+    /* Hooks */
     const classes = useStyles();
-    const theme = useTheme();
-    const matches = useMediaQuery(theme.breakpoints.down('md'));
-    const dispatch = useAppDispatch();
 
-    const tabKey = useAppSelector((state) => state.search.activeTab);
-    const activeTab = tabNameMap[tabKey];
+    const { exploreSearchTab, setExploreParams } = useExploreParams();
+
+    const nodeSearchState = useNodeSearch();
+    const pathfindingSearchState = usePathfindingSearch();
+    const cypherSearchState = useCypherSearch();
+
+    // We can move this back down into the filter modal once we remove the redux implementation
+    const pathfindingFilterState = usePathfindingFilters();
+
+    const activeTab = getTab(exploreSearchTab);
 
     const [showSearchWidget, setShowSearchWidget] = useState(true);
 
+    /* Event Handlers */
     const handleTabChange = (newTabIndex: number) => {
-        switch (newTabIndex) {
-            case 0:
-                dispatch(searchbarActions.primarySearch());
-                return dispatch(searchbarActions.tabChanged(PRIMARY_SEARCH));
-            case 1:
-                dispatch(searchbarActions.pathfindingSearch());
-                return dispatch(searchbarActions.tabChanged(PATHFINDING_SEARCH));
-            case 2:
-                dispatch(searchbarActions.cypherSearch());
-                return dispatch(searchbarActions.tabChanged(CYPHER_SEARCH));
-        }
+        const tabs = ['node', 'pathfinding', 'cypher'] as ExploreSearchTab[];
+        const nextTab = tabs[newTabIndex];
 
-        const cypherTabIndex = 2;
-        if (handleColumns) {
-            handleColumns(newTabIndex === cypherTabIndex);
+        const teardownParams = teardownActiveTab(activeTab);
+        const setupParams = setupNextTab(nextTab);
+
+        setExploreParams({ ...teardownParams, ...setupParams });
+    };
+
+    // Clean up query params from previous tab, removing query params when the field has been edited since the last search
+    const teardownActiveTab = (tab: ExploreSearchTab): Partial<ExploreQueryParams> => {
+        const params: Partial<ExploreQueryParams> = {};
+
+        if (tab === 'node') {
+            if (!nodeSearchState.selectedItem) {
+                params.primarySearch = null;
+                pathfindingSearchState.handleSourceNodeEdited(nodeSearchState.searchTerm);
+            }
         }
+        if (tab === 'pathfinding') {
+            if (!pathfindingSearchState.sourceSelectedItem) {
+                params.primarySearch = null;
+                nodeSearchState.editSourceNode(pathfindingSearchState.sourceSearchTerm);
+            }
+            if (!pathfindingSearchState.destinationSelectedItem) {
+                params.secondarySearch = null;
+            }
+        }
+        if (tab === 'cypher') {
+            if (!cypherSearchState.cypherQuery) {
+                params.cypherSearch = null;
+            }
+        }
+        return params;
+    };
+
+    // Set up up query params for the incoming tab. should only update the query type if the query can be performed
+    const setupNextTab = (tab: ExploreSearchTab): Partial<ExploreQueryParams> => {
+        const params: Partial<ExploreQueryParams> = {};
+
+        if (tab === 'node') {
+            if (nodeSearchState.selectedItem) {
+                params.searchType = 'node';
+            }
+            params.exploreSearchTab = 'node';
+        }
+        if (tab === 'pathfinding') {
+            if (pathfindingSearchState.sourceSelectedItem && pathfindingSearchState.destinationSelectedItem) {
+                params.searchType = 'pathfinding';
+            } else if (pathfindingSearchState.sourceSelectedItem || pathfindingSearchState.destinationSelectedItem) {
+                params.searchType = 'node';
+            }
+            params.exploreSearchTab = 'pathfinding';
+        }
+        if (tab === 'cypher') {
+            if (cypherSearchState.cypherQuery) {
+                params.searchType = 'cypher';
+            }
+            params.cypherSearch = encodeCypherQuery(cypherSearchState.cypherQuery);
+            params.exploreSearchTab = 'cypher';
+        }
+        return params;
+    };
+
+    //auto run queries
+    const autoRun = useAppSelector((state) => state.global.view.autoRunQueries);
+    const dispatch = useAppDispatch();
+    const handleAutoRunChange = (autoRun: boolean) => {
+        dispatch(setAutoRunQueries(autoRun));
     };
 
     return (
-        <Box sx={{ pointerEvents: 'auto' }}>
-            <Paper sx={{ height: '40px', display: 'flex', flexShrink: 4, gap: 1 }} elevation={0}>
+        <div
+            data-testid='explore_search-container'
+            className={cn('h-full min-h-0 w-[410px] flex gap-4 flex-col rounded', {
+                'w-[600px]': activeTab === 'cypher' && showSearchWidget,
+            })}>
+            <div
+                className='h-10 w-full flex gap-1 rounded pointer-events-auto bg-[#f4f4f4] dark:bg-[#222222]'
+                data-testid='explore_search-container_header'>
                 <Icon
+                    tip='Toggle search widget'
+                    data-testid='explore_search-container_header_expand-collapse-button'
                     className={classes.icon}
-                    click={() => {
+                    onClick={() => {
                         setShowSearchWidget((v) => !v);
                     }}>
                     <FontAwesomeIcon icon={showSearchWidget ? faMinus : faPlus} />
                 </Icon>
                 <Tabs
                     variant='fullWidth'
-                    value={activeTab}
+                    value={tabMap[activeTab]}
                     onChange={(e, newTabIdx) => handleTabChange(newTabIdx)}
                     onClick={() => setShowSearchWidget(true)}
-                    sx={{
-                        height: '40px',
-                        minHeight: '40px',
-                        display: 'flex',
-                        justifyContent: 'space-around',
-                        width: '100%',
-                    }}
+                    className='h-10 min-h-10 w-full'
                     TabIndicatorProps={{
-                        sx: { height: 3, backgroundColor: '#6798B9' },
+                        className: 'h-[3px]',
                     }}>
-                    {getTabsContent(theme, matches)}
+                    {tabs.map(({ label, icon }) => (
+                        <Tab
+                            data-testid={`explore_search-container_header_${label.toLowerCase()}-tab`}
+                            label={label}
+                            key={label}
+                            icon={<FontAwesomeIcon icon={icon} />}
+                            iconPosition='start'
+                            title={label}
+                            className='h-10 min-h-10'
+                        />
+                    ))}
                 </Tabs>
-            </Paper>
+            </div>
 
-            <Collapse in={showSearchWidget}>
-                <Paper sx={{ mt: 1, p: 1 }} elevation={0}>
-                    <TabPanels tabs={[<NodeSearch />, <PathfindingSearch />, <CypherSearch />]} activeTab={activeTab} />
-                </Paper>
-            </Collapse>
-        </Box>
+            <div
+                className={cn('hidden min-h-0 rounded pointer-events-auto', {
+                    block: showSearchWidget,
+                    'p-2 bg-[#f4f4f4] dark:bg-[#222222]': activeTab !== 'cypher',
+                })}>
+                <TabPanels
+                    tabs={[
+                        // This linting rule is disabled because the elements in this array do not require a key prop.
+                        /* eslint-disable react/jsx-key */
+                        <NodeSearch nodeSearchState={nodeSearchState} />,
+                        <PathfindingSearch
+                            pathfindingSearchState={pathfindingSearchState}
+                            pathfindingFilterState={pathfindingFilterState}
+                        />,
+                        <CypherSearch
+                            cypherSearchState={cypherSearchState}
+                            autoRun={autoRun}
+                            setAutoRun={handleAutoRunChange}
+                        />,
+                        /* eslint-enable react/jsx-key */
+                    ]}
+                    activeTab={tabMap[activeTab]}
+                />
+            </div>
+        </div>
     );
-};
-
-const getTabsContent = (theme: Theme, matches: boolean) => {
-    const tabs = [
-        {
-            label: 'Search',
-            icon: faSearch,
-        },
-        {
-            label: 'Pathfinding',
-            icon: faDirections,
-        },
-        {
-            label: 'Cypher',
-            icon: faCode,
-        },
-    ];
-
-    return tabs.map(({ label, icon }) => (
-        <Tab
-            label={matches ? '' : label}
-            key={label}
-            icon={<FontAwesomeIcon icon={icon} />}
-            iconPosition='start'
-            title={label}
-            sx={{
-                height: '40px',
-                minHeight: '40px',
-                color: 'black',
-                opacity: 1,
-                padding: 0,
-                flexGrow: 1,
-                minWidth: theme.spacing(2),
-            }}
-        />
-    ));
 };
 
 interface TabPanelsProps {
@@ -165,11 +246,15 @@ const TabPanels = ({ tabs, activeTab }: TabPanelsProps) => {
     return (
         <>
             {tabs.map((tab, index) => {
-                return (
-                    <Box role='tabpanel' key={index}>
-                        {activeTab === index && tab}
-                    </Box>
-                );
+                if (activeTab === index) {
+                    return (
+                        <div role='tabpanel' key={index} className='h-full'>
+                            {tab}
+                        </div>
+                    );
+                } else {
+                    return null;
+                }
             })}
         </>
     );

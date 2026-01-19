@@ -16,7 +16,7 @@
 
 package api
 
-//go:generate go run go.uber.org/mock/mockgen -copyright_file=../../../../LICENSE.header -destination=./mocks/authenticator.go -package=mocks . Authenticator
+//go:generate go run go.uber.org/mock/mockgen -copyright_file=../../../../LICENSE.header -destination=./mocks/authenticator.go -package=mocks . Authenticator,AuthExtensions
 
 import (
 	"bytes"
@@ -24,31 +24,53 @@ import (
 	"crypto/sha256"
 	"crypto/subtle"
 	"encoding/base64"
+	"errors"
 	"fmt"
 	"io"
+	"log/slog"
 	"net/http"
 	"strconv"
+	"strings"
 	"time"
 
 	"github.com/gofrs/uuid"
 	"github.com/golang-jwt/jwt/v4"
-	"github.com/specterops/bloodhound/crypto"
-	"github.com/specterops/bloodhound/errors"
-	"github.com/specterops/bloodhound/headers"
-	"github.com/specterops/bloodhound/log"
-	"github.com/specterops/bloodhound/src/auth"
-	"github.com/specterops/bloodhound/src/config"
-	"github.com/specterops/bloodhound/src/ctx"
-	"github.com/specterops/bloodhound/src/database"
-	"github.com/specterops/bloodhound/src/database/types"
-	"github.com/specterops/bloodhound/src/model"
+	"github.com/specterops/bloodhound/cmd/api/src/auth"
+	"github.com/specterops/bloodhound/cmd/api/src/config"
+	"github.com/specterops/bloodhound/cmd/api/src/ctx"
+	"github.com/specterops/bloodhound/cmd/api/src/database"
+	"github.com/specterops/bloodhound/cmd/api/src/database/types"
+	"github.com/specterops/bloodhound/cmd/api/src/model"
+	"github.com/specterops/bloodhound/cmd/api/src/model/appcfg"
+	"github.com/specterops/bloodhound/packages/go/crypto"
+	"github.com/specterops/bloodhound/packages/go/headers"
 )
 
-const (
-	ErrInvalidAuth  = errors.Error("invalid authentication")
-	ErrNoUserSecret = errors.Error("user does not have a secret auth provider registered")
-	ErrUserDisabled = errors.Error("user disabled")
+var (
+	ErrInvalidAuth                  = errors.New("invalid authentication")
+	ErrNoUserSecret                 = errors.New("user does not have a secret auth provider registered")
+	ErrUserDisabled                 = errors.New("user disabled")
+	ErrUserNotAuthorizedForProvider = errors.New("user not authorized for this provider")
+	ErrInvalidAuthProvider          = errors.New("invalid auth provider")
 )
+
+type LoginRequest struct {
+	LoginMethod string `json:"login_method"`
+	Username    string `json:"username"`
+	Secret      string `json:"secret,omitempty"`
+	OTP         string `json:"otp,omitempty"`
+}
+
+type LoginDetails struct {
+	User         model.User
+	SessionToken string
+}
+
+type LoginResponse struct {
+	UserID       string `json:"user_id"`
+	AuthExpired  bool   `json:"auth_expired"`
+	SessionToken string `json:"session_token"`
+}
 
 func parseRequestDate(rawDate string) (time.Time, error) {
 	if requestDate, err := time.Parse(time.RFC3339, rawDate); err != nil {
@@ -62,38 +84,94 @@ func parseRequestDate(rawDate string) (time.Time, error) {
 	}
 }
 
+type AuthExtensions interface {
+	InitContextFromToken(ctx context.Context, authToken model.AuthToken) (auth.Context, error)
+	InitContextFromClaims(ctx context.Context, claims *jwt.RegisteredClaims) (auth.Context, error)
+	ParseClaimsAndVerifySignature(ctx context.Context, jwtToken string) (*jwt.RegisteredClaims, error)
+}
+
+type authExtensions struct {
+	cfg config.Configuration
+	db  database.Database
+}
+
+func NewAuthExtensions(cfg config.Configuration, db database.Database) AuthExtensions {
+	return authExtensions{
+		cfg: cfg,
+		db:  db,
+	}
+}
+
+func (s authExtensions) InitContextFromToken(ctx context.Context, authToken model.AuthToken) (auth.Context, error) {
+	if authToken.UserID.Valid {
+		if user, err := s.db.GetUser(ctx, authToken.UserID.UUID); err != nil {
+			return auth.Context{}, err
+		} else {
+			return auth.Context{
+				Owner: user,
+			}, nil
+		}
+	}
+
+	return auth.Context{}, database.ErrNotFound
+}
+
+func (s authExtensions) InitContextFromClaims(_ context.Context, _ *jwt.RegisteredClaims) (auth.Context, error) {
+	return auth.Context{}, nil
+}
+
+func (s authExtensions) ParseClaimsAndVerifySignature(ctx context.Context, jwtToken string) (*jwt.RegisteredClaims, error) {
+	claims := jwt.RegisteredClaims{}
+	if token, err := jwt.ParseWithClaims(jwtToken, &claims, s.jwtKeyFunc); err != nil {
+		if errors.Is(err, jwt.ErrSignatureInvalid) {
+			return &claims, ErrInvalidAuth
+		}
+		return &claims, err
+	} else if !token.Valid {
+		return &claims, ErrInvalidAuth
+	}
+
+	return &claims, nil
+}
+
+func (s authExtensions) jwtKeyFunc(_ *jwt.Token) (any, error) {
+	return s.cfg.Crypto.JWT.SigningKeyBytes()
+}
+
 type Authenticator interface {
 	LoginWithSecret(ctx context.Context, loginRequest LoginRequest) (LoginDetails, error)
 	Logout(ctx context.Context, userSession model.UserSession)
 	ValidateSecret(ctx context.Context, secret string, authSecret model.AuthSecret) error
 	ValidateRequestSignature(tokenID uuid.UUID, request *http.Request, serverTime time.Time) (auth.Context, int, error)
 	CreateSession(ctx context.Context, user model.User, authProvider any) (string, error)
+	CreateSSOSession(request *http.Request, response http.ResponseWriter, principalNameOrEmail string, ssoProvider model.SSOProvider)
+	ValidateBearerToken(ctx context.Context, jwtToken string) (auth.Context, error)
 	ValidateSession(ctx context.Context, jwtTokenString string) (auth.Context, error)
 }
 
-type authenticator struct {
+type AuthenticatorBase struct {
 	cfg             config.Configuration
 	db              database.Database
+	authExtensions  AuthExtensions
 	secretDigester  crypto.SecretDigester
 	concurrencyLock chan struct{}
-	ctxInitializer  database.AuthContextInitializer
 }
 
-func NewAuthenticator(cfg config.Configuration, db database.Database, ctxInitializer database.AuthContextInitializer) Authenticator {
-	return authenticator{
+func NewAuthenticator(cfg config.Configuration, db database.Database, authExtensions AuthExtensions) Authenticator {
+	return AuthenticatorBase{
 		cfg:             cfg,
 		db:              db,
+		authExtensions:  authExtensions,
 		secretDigester:  cfg.Crypto.Argon2.NewDigester(),
 		concurrencyLock: make(chan struct{}, 1),
-		ctxInitializer:  ctxInitializer,
 	}
 }
 
-func (s authenticator) auditLogin(requestContext context.Context, commitID uuid.UUID, user model.User, loginRequest LoginRequest, status string, loginError error) {
+func (s AuthenticatorBase) auditLogin(requestContext context.Context, commitID uuid.UUID, status model.AuditLogEntryStatus, user model.User, fields types.JSONUntypedObject) {
 	bhCtx := ctx.Get(requestContext)
 	auditLog := model.AuditLog{
 		Action:          model.AuditLogActionLoginAttempt,
-		Fields:          types.JSONUntypedObject{"username": loginRequest.Username},
+		Fields:          fields,
 		RequestID:       bhCtx.RequestID,
 		SourceIpAddress: bhCtx.RequestIP,
 		Status:          status,
@@ -106,14 +184,13 @@ func (s authenticator) auditLogin(requestContext context.Context, commitID uuid.
 		auditLog.ActorEmail = user.EmailAddress.ValueOrZero()
 	}
 
-	if status == string(model.AuditLogStatusFailure) {
-		auditLog.Fields["error"] = loginError
+	err := s.db.CreateAuditLog(requestContext, auditLog)
+	if err != nil {
+		slog.WarnContext(requestContext, fmt.Sprintf("failed to write login audit log %+v", err))
 	}
-
-	s.db.CreateAuditLog(requestContext, auditLog)
 }
 
-func (s authenticator) validateSecretLogin(ctx context.Context, loginRequest LoginRequest) (model.User, string, error) {
+func (s AuthenticatorBase) validateSecretLogin(ctx context.Context, loginRequest LoginRequest) (model.User, string, error) {
 	if user, err := s.db.LookupUser(ctx, loginRequest.Username); err != nil {
 		if errors.Is(err, database.ErrNotFound) {
 			return model.User{}, "", ErrInvalidAuth
@@ -133,41 +210,34 @@ func (s authenticator) validateSecretLogin(ctx context.Context, loginRequest Log
 	}
 }
 
-func (s authenticator) LoginWithSecret(ctx context.Context, loginRequest LoginRequest) (LoginDetails, error) {
-	var (
-		commitID     uuid.UUID
-		err          error
-		sessionToken string
-		user         model.User
-	)
+func (s AuthenticatorBase) LoginWithSecret(ctx context.Context, loginRequest LoginRequest) (LoginDetails, error) {
+	auditLogFields := types.JSONUntypedObject{"username": loginRequest.Username, "auth_type": auth.ProviderTypeSecret}
 
-	commitID, err = uuid.NewV4()
-	if err != nil {
-		log.Errorf("error generating commit ID for login: %s", err)
-		return LoginDetails{}, err
-	}
-
-	s.auditLogin(ctx, commitID, user, loginRequest, string(model.AuditLogStatusIntent), err)
-
-	user, sessionToken, err = s.validateSecretLogin(ctx, loginRequest)
-
-	if err != nil {
-		s.auditLogin(ctx, commitID, user, loginRequest, string(model.AuditLogStatusFailure), err)
+	if commitID, err := uuid.NewV4(); err != nil {
+		slog.ErrorContext(ctx, fmt.Sprintf("Error generating commit ID for login: %s", err))
 		return LoginDetails{}, err
 	} else {
-		s.auditLogin(ctx, commitID, user, loginRequest, string(model.AuditLogStatusSuccess), err)
-		return LoginDetails{
-			User:         user,
-			SessionToken: sessionToken,
-		}, nil
+		s.auditLogin(ctx, commitID, model.AuditLogStatusIntent, model.User{}, auditLogFields)
+
+		if user, sessionToken, err := s.validateSecretLogin(ctx, loginRequest); err != nil {
+			auditLogFields["error"] = err
+			s.auditLogin(ctx, commitID, model.AuditLogStatusFailure, user, auditLogFields)
+			return LoginDetails{}, err
+		} else {
+			s.auditLogin(ctx, commitID, model.AuditLogStatusSuccess, user, auditLogFields)
+			return LoginDetails{
+				User:         user,
+				SessionToken: sessionToken,
+			}, nil
+		}
 	}
 }
 
-func (s authenticator) Logout(ctx context.Context, userSession model.UserSession) {
+func (s AuthenticatorBase) Logout(ctx context.Context, userSession model.UserSession) {
 	s.db.EndUserSession(ctx, userSession)
 }
 
-func (s authenticator) ValidateSecret(ctx context.Context, secret string, authSecret model.AuthSecret) error {
+func (s AuthenticatorBase) ValidateSecret(ctx context.Context, secret string, authSecret model.AuthSecret) error {
 	select {
 	case s.concurrencyLock <- struct{}{}:
 		defer func() {
@@ -229,7 +299,7 @@ func handleAuthDBError(err error) (auth.Context, int, error) {
 // e.g. - 500 MiBps * 0.1s = 50MiB
 const ThresholdLargePayload int64 = 50 << 20
 
-func (s authenticator) ValidateRequestSignature(tokenID uuid.UUID, request *http.Request, serverTime time.Time) (auth.Context, int, error) {
+func (s AuthenticatorBase) ValidateRequestSignature(tokenID uuid.UUID, request *http.Request, serverTime time.Time) (auth.Context, int, error) {
 	if requestDateHeader := request.Header.Get(headers.RequestDate.String()); requestDateHeader == "" {
 		return auth.Context{}, http.StatusBadRequest, fmt.Errorf("no request date header")
 	} else if requestDate, err := parseRequestDate(requestDateHeader); err != nil {
@@ -240,10 +310,10 @@ func (s authenticator) ValidateRequestSignature(tokenID uuid.UUID, request *http
 		return auth.Context{}, http.StatusBadRequest, fmt.Errorf("malformed signature header: %w", err)
 	} else if authToken, err := s.db.GetAuthToken(request.Context(), tokenID); err != nil {
 		return handleAuthDBError(err)
-	} else if authContext, err := s.ctxInitializer.InitContextFromToken(request.Context(), authToken); err != nil {
+	} else if authContext, err := s.authExtensions.InitContextFromToken(request.Context(), authToken); err != nil {
 		return handleAuthDBError(err)
 	} else if user, isUser := auth.GetUserFromAuthCtx(authContext); isUser && user.IsDisabled {
-		return authContext, http.StatusForbidden, errors.Error("user disabled")
+		return authContext, http.StatusForbidden, ErrUserDisabled
 	} else if err := validateRequestTime(serverTime, requestDate); err != nil {
 		return auth.Context{}, http.StatusUnauthorized, err
 	} else {
@@ -269,7 +339,7 @@ func (s authenticator) ValidateRequestSignature(tokenID uuid.UUID, request *http
 			}
 		}
 
-		if digestNow, err := NewRequestSignature(sha256.New, authToken.Key, requestDate.Format(time.RFC3339), request.Method, request.RequestURI, teeReader); err != nil {
+		if digestNow, err := NewRequestSignature(request.Context(), sha256.New, authToken.Key, requestDate.Format(time.RFC3339), request.Method, request.RequestURI, teeReader); err != nil {
 			if readCloser != nil {
 				readCloser.Close()
 			}
@@ -285,7 +355,7 @@ func (s authenticator) ValidateRequestSignature(tokenID uuid.UUID, request *http
 			authToken.LastAccess = time.Now().UTC()
 
 			if err := s.db.UpdateAuthToken(request.Context(), authToken); err != nil {
-				log.Errorf("Error updating last access on AuthToken: %v", err)
+				slog.ErrorContext(request.Context(), fmt.Sprintf("Error updating last access on AuthToken: %v", err))
 			}
 
 			if sdtf, ok := readCloser.(*SelfDestructingTempFile); ok {
@@ -299,27 +369,146 @@ func (s authenticator) ValidateRequestSignature(tokenID uuid.UUID, request *http
 	}
 }
 
-func (s authenticator) CreateSession(ctx context.Context, user model.User, authProvider any) (string, error) {
+func DeleteBrowserCookie(request *http.Request, response http.ResponseWriter, name string) {
+	SetSecureBrowserCookie(request, response, name, "", time.Now().UTC(), false, 0)
+}
+
+func SetSecureBrowserCookie(request *http.Request, response http.ResponseWriter, name, value string, expires time.Time, httpOnly bool, sameSite http.SameSite) {
+	var (
+		hostURL = *ctx.FromRequest(request).Host
+		isHttps = hostURL.Scheme == "https"
+	)
+
+	// If sameSite is not explicitly set, we want to rely on the host scheme
+	if sameSite == 0 && isHttps {
+		sameSite = http.SameSiteStrictMode
+	}
+
+	// NOTE: Browsers will not set localhost cookies with sameSite set to None. This is a local network SSO workaround
+	if strings.Contains(hostURL.Hostname(), "localhost") && sameSite == http.SameSiteNoneMode {
+		sameSite = http.SameSiteDefaultMode
+	}
+
+	// Set the token cookie
+	http.SetCookie(response, &http.Cookie{
+		Name:     name,
+		Value:    value,
+		Expires:  expires,
+		Secure:   isHttps,
+		HttpOnly: httpOnly,
+		SameSite: sameSite,
+		Path:     "/",
+	})
+}
+
+func (s AuthenticatorBase) CreateSSOSession(request *http.Request, response http.ResponseWriter, principalNameOrEmail string, ssoProvider model.SSOProvider) {
+	var (
+		hostURL    = *ctx.FromRequest(request).Host
+		requestCtx = request.Context()
+		err        error
+
+		authProvider any
+		user         model.User
+
+		commitID        uuid.UUID
+		auditLogFields  = types.JSONUntypedObject{"username": principalNameOrEmail, "sso_provider_id": ssoProvider.ID}
+		auditLogOutcome = model.AuditLogStatusFailure
+	)
+
+	switch ssoProvider.Type {
+	case model.SessionAuthProviderSAML:
+		auditLogFields["auth_type"] = auth.ProviderTypeSAML
+		if ssoProvider.SAMLProvider != nil {
+			auditLogFields["saml_provider_id"] = ssoProvider.SAMLProvider.ID
+			authProvider = *ssoProvider.SAMLProvider
+		}
+	case model.SessionAuthProviderOIDC:
+		auditLogFields["auth_type"] = auth.ProviderTypeOIDC
+		if ssoProvider.OIDCProvider != nil {
+			auditLogFields["oidc_provider_id"] = ssoProvider.OIDCProvider.ID
+			authProvider = *ssoProvider.OIDCProvider
+		}
+	}
+
+	// Generate commit ID for audit logging
+	if commitID, err = uuid.NewV4(); err != nil {
+		slog.WarnContext(request.Context(), fmt.Sprintf("[SSO] Error generating commit ID for login: %s", err))
+		RedirectToLoginURL(response, request, "We’re having trouble connecting. Please check your internet and try again.")
+		return
+	}
+
+	// Log the intent to authenticate
+	s.auditLogin(requestCtx, commitID, model.AuditLogStatusIntent, user, auditLogFields)
+
+	// Log authentication success or failure
+	defer func() {
+		s.auditLogin(requestCtx, commitID, auditLogOutcome, user, auditLogFields)
+	}()
+
+	if user, err = s.db.LookupUser(requestCtx, principalNameOrEmail); err != nil {
+		auditLogFields["error"] = err
+		if !errors.Is(err, database.ErrNotFound) {
+			slog.WarnContext(request.Context(), fmt.Sprintf("[SSO] Error looking up user: %v", err))
+			RedirectToLoginURL(response, request, "We’re having trouble connecting. Please check your internet and try again.")
+		} else {
+			RedirectToLoginURL(response, request, "Your user is not allowed, please contact your Administrator")
+		}
+	} else {
+		if !user.SSOProviderID.Valid || ssoProvider.ID != user.SSOProviderID.Int32 {
+			auditLogFields["error"] = ErrUserNotAuthorizedForProvider
+			RedirectToLoginURL(response, request, "Your user is not allowed, please contact your Administrator")
+			return
+		}
+
+		if sessionJWT, err := s.CreateSession(requestCtx, user, authProvider); err != nil {
+			auditLogFields["error"] = err
+			if locationURL := URLJoinPath(hostURL, UserDisabledPath); errors.Is(err, ErrUserDisabled) {
+				response.Header().Add(headers.Location.String(), locationURL.String())
+				response.WriteHeader(http.StatusFound)
+			} else {
+				slog.WarnContext(request.Context(), fmt.Sprintf("[SSO] session creation failure %v", err))
+				RedirectToLoginURL(response, request, "We’re having trouble connecting. Please check your internet and try again.")
+			}
+		} else {
+			auditLogOutcome = model.AuditLogStatusSuccess
+
+			locationURL := URLJoinPath(hostURL, UserInterfacePath)
+
+			// Set the token cookie, httpOnly must be false for the UI to pick up and store token
+			SetSecureBrowserCookie(request, response, AuthTokenCookieName, sessionJWT, time.Now().UTC().Add(appcfg.GetSessionTTLHours(request.Context(), s.db)), false, 0)
+
+			// Redirect back to the UI landing page
+			response.Header().Add(headers.Location.String(), locationURL.String())
+			response.WriteHeader(http.StatusFound)
+		}
+	}
+}
+
+func (s AuthenticatorBase) CreateSession(ctx context.Context, user model.User, authProvider any) (string, error) {
 	if user.IsDisabled {
 		return "", ErrUserDisabled
 	}
 
-	log.Infof("Creating session for user: %s(%s)", user.ID, user.PrincipalName)
+	slog.InfoContext(ctx, fmt.Sprintf("Creating session for user: %s(%s)", user.ID, user.PrincipalName))
 
 	userSession := model.UserSession{
 		User:      user,
 		UserID:    user.ID,
-		ExpiresAt: time.Now().UTC().Add(s.cfg.AuthSessionTTL()),
+		ExpiresAt: time.Now().UTC().Add(appcfg.GetSessionTTLHours(ctx, s.db)),
 	}
 
 	switch typedAuthProvider := authProvider.(type) {
 	case model.AuthSecret:
 		userSession.AuthProviderType = model.SessionAuthProviderSecret
 		userSession.AuthProviderID = typedAuthProvider.ID
-
 	case model.SAMLProvider:
 		userSession.AuthProviderType = model.SessionAuthProviderSAML
 		userSession.AuthProviderID = typedAuthProvider.ID
+	case model.OIDCProvider:
+		userSession.AuthProviderType = model.SessionAuthProviderOIDC
+		userSession.AuthProviderID = typedAuthProvider.ID
+	default:
+		return "", ErrInvalidAuthProvider
 	}
 
 	if newSession, err := s.db.CreateUserSession(ctx, userSession); err != nil {
@@ -328,13 +517,12 @@ func (s authenticator) CreateSession(ctx context.Context, user model.User, authP
 		return "", err
 	} else {
 		var (
-			jwtClaims = &auth.SessionData{
-				StandardClaims: jwt.StandardClaims{
-					Id:        strconv.FormatInt(newSession.ID, 10),
-					Subject:   user.ID.String(),
-					IssuedAt:  newSession.CreatedAt.UTC().Unix(),
-					ExpiresAt: newSession.ExpiresAt.UTC().Unix(),
-				},
+			jwtClaims = jwt.RegisteredClaims{
+				Issuer:    s.cfg.GetRootURLHost(),
+				ID:        strconv.FormatInt(newSession.ID, 10),
+				Subject:   user.ID.String(),
+				IssuedAt:  jwt.NewNumericDate(newSession.CreatedAt.UTC()),
+				ExpiresAt: jwt.NewNumericDate(newSession.ExpiresAt.UTC()),
 			}
 
 			token = jwt.NewWithClaims(jwt.SigningMethodHS256, jwtClaims)
@@ -344,30 +532,35 @@ func (s authenticator) CreateSession(ctx context.Context, user model.User, authP
 	}
 }
 
-func (s authenticator) jwtSigningKey(token *jwt.Token) (any, error) {
-	return s.cfg.Crypto.JWT.SigningKeyBytes()
+func (s AuthenticatorBase) ValidateBearerToken(ctx context.Context, jwtToken string) (auth.Context, error) {
+	if claims, err := s.authExtensions.ParseClaimsAndVerifySignature(ctx, jwtToken); err != nil {
+		return auth.Context{}, err
+	} else if authContext, err := s.authExtensions.InitContextFromClaims(ctx, claims); err != nil {
+		slog.ErrorContext(ctx, fmt.Sprintf("Error initializing auth context from claims: %v", err))
+		return auth.Context{}, err
+	} else if authContext.Owner == nil {
+		// The above logic is currently used to determine if the token is created from BloodHound. If nil, it was created by BloodHound.
+		slog.DebugContext(ctx, "No owner claim found for token, defaulting to BloodHound provided token")
+		if authContext, err = s.ValidateSession(ctx, claims.ID); err != nil {
+			return auth.Context{}, err
+		} else {
+			return authContext, nil
+		}
+	} else {
+		return authContext, nil
+	}
 }
 
-func (s authenticator) ValidateSession(ctx context.Context, jwtTokenString string) (auth.Context, error) {
-	claims := auth.SessionData{}
+func (s AuthenticatorBase) ValidateSession(ctx context.Context, claimsID string) (auth.Context, error) {
 
-	if token, err := jwt.ParseWithClaims(jwtTokenString, &claims, s.jwtSigningKey); err != nil {
-		if err == jwt.ErrSignatureInvalid {
-			return auth.Context{}, ErrInvalidAuth
-		}
-
-		return auth.Context{}, err
-	} else if !token.Valid {
-		log.Infof("Token invalid")
-		return auth.Context{}, ErrInvalidAuth
-	} else if sessionID, err := claims.SessionID(); err != nil {
-		log.Infof("Session ID %s invalid: %v", claims.Id, err)
+	if sessionID, err := strconv.ParseInt(claimsID, 10, 64); err != nil {
+		slog.InfoContext(ctx, fmt.Sprintf("Session ID %s invalid: %v", claimsID, err))
 		return auth.Context{}, ErrInvalidAuth
 	} else if session, err := s.db.GetUserSession(ctx, sessionID); err != nil {
-		log.Infof("Unable to find session %d", sessionID)
+		slog.InfoContext(ctx, fmt.Sprintf("Unable to find session %d", sessionID))
 		return auth.Context{}, ErrInvalidAuth
 	} else if session.Expired() {
-		log.Infof("Session %s is expired", sessionID)
+		slog.InfoContext(ctx, fmt.Sprintf("Session %d is expired", sessionID))
 		return auth.Context{}, ErrInvalidAuth
 	} else {
 		authContext := auth.Context{
@@ -375,7 +568,10 @@ func (s authenticator) ValidateSession(ctx context.Context, jwtTokenString strin
 			Session: session,
 		}
 
-		if session.AuthProviderType == model.SessionAuthProviderSecret && session.User.AuthSecret.Expired() {
+		if session.AuthProviderType == model.SessionAuthProviderSecret && session.User.AuthSecret == nil {
+			slog.InfoContext(ctx, fmt.Sprintf("No auth secret found for user ID %s", session.UserID.String()))
+			return auth.Context{}, ErrNoUserSecret
+		} else if session.AuthProviderType == model.SessionAuthProviderSecret && session.User.AuthSecret.Expired() {
 			var (
 				authManageSelfPermission = auth.Permissions().AuthManageSelf
 				permissions              model.Permissions
@@ -389,6 +585,7 @@ func (s authenticator) ValidateSession(ctx context.Context, jwtTokenString strin
 				Enabled:     true,
 				Permissions: permissions,
 			}
+
 			// EULA Acceptance does not pertain to Bloodhound Community Edition; this flag is used for Bloodhound Enterprise users.
 			// This value is automatically set to true for Bloodhound Community Edition in the patchEULAAcceptance and CreateUser functions.
 		} else if !session.User.EULAAccepted {
@@ -402,22 +599,4 @@ func (s authenticator) ValidateSession(ctx context.Context, jwtTokenString strin
 
 		return authContext, nil
 	}
-}
-
-type LoginRequest struct {
-	LoginMethod string `json:"login_method"`
-	Username    string `json:"username"`
-	Secret      string `json:"secret,omitempty"`
-	OTP         string `json:"otp,omitempty"`
-}
-
-type LoginDetails struct {
-	User         model.User
-	SessionToken string
-}
-
-type LoginResponse struct {
-	UserID       string `json:"user_id"`
-	AuthExpired  bool   `json:"auth_expired"`
-	SessionToken string `json:"session_token"`
 }

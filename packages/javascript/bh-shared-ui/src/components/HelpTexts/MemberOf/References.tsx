@@ -14,19 +14,19 @@
 //
 // SPDX-License-Identifier: Apache-2.0
 
+import { Box, Link } from '@mui/material';
 import { FC } from 'react';
-import { Link, Box } from '@mui/material';
 
 const References: FC = () => {
     return (
-        <Box sx={{ overflowX: 'auto' }}>
-            <Link target='_blank' rel='noopener' href='https://adsecurity.org/?tag=ad-delegation'>
+        <Box className='overflow-x-auto'>
+            <Link target='_blank' rel='noopener noreferrer' href='https://adsecurity.org/?tag=ad-delegation'>
                 https://adsecurity.org/?tag=ad-delegation
             </Link>
             <br />
             <Link
                 target='_blank'
-                rel='noopener'
+                rel='noopener noreferrer'
                 href='https://www.itprotoday.com/management-mobility/view-or-remove-active-directory-delegated-permissions '>
                 https://www.itprotoday.com/management-mobility/view-or-remove-active-directory-delegated-permissions{' '}
             </Link>

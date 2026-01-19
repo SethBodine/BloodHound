@@ -15,155 +15,259 @@
 // SPDX-License-Identifier: Apache-2.0
 
 //go:build integration
-// +build integration
 
 package queries_test
 
 import (
 	"context"
-	schema "github.com/specterops/bloodhound/graphschema"
-	"github.com/specterops/bloodhound/src/config"
+	"os"
+	"path"
+	"reflect"
 	"testing"
 
-	adAnalysis "github.com/specterops/bloodhound/analysis/ad"
-	"github.com/specterops/bloodhound/cache"
-	"github.com/specterops/bloodhound/dawgs/graph"
-	"github.com/specterops/bloodhound/dawgs/query"
-	"github.com/specterops/bloodhound/graphschema/ad"
-	"github.com/specterops/bloodhound/graphschema/azure"
-	"github.com/specterops/bloodhound/graphschema/common"
-	"github.com/specterops/bloodhound/src/api/bloodhoundgraph"
-	"github.com/specterops/bloodhound/src/queries"
-	"github.com/specterops/bloodhound/src/test/integration"
+	"github.com/specterops/bloodhound/cmd/api/src/config"
+	schema "github.com/specterops/bloodhound/packages/go/graphschema"
+	"github.com/specterops/bloodhound/packages/go/lab/generic"
+
+	"github.com/specterops/bloodhound/cmd/api/src/api/bloodhoundgraph"
+	"github.com/specterops/bloodhound/cmd/api/src/queries"
+	"github.com/specterops/bloodhound/cmd/api/src/test/integration"
+	adAnalysis "github.com/specterops/bloodhound/packages/go/analysis/ad"
+	"github.com/specterops/bloodhound/packages/go/cache"
+	"github.com/specterops/bloodhound/packages/go/graphschema/ad"
+	"github.com/specterops/bloodhound/packages/go/graphschema/azure"
+	"github.com/specterops/bloodhound/packages/go/graphschema/common"
+	"github.com/specterops/dawgs/graph"
+	"github.com/specterops/dawgs/query"
 	"github.com/stretchr/testify/require"
 )
 
-func TestSearchNodesByName_ExactMatch(t *testing.T) {
-	testContext := integration.NewGraphTestContext(t, schema.DefaultGraphSchema())
+func setupGraphDb(t *testing.T) IntegrationTestSuite {
+	var (
+		fixturesPath = path.Join("fixtures", "OpenGraphJSON", "raw")
+		testSuite    = setupIntegrationTestSuite(t, fixturesPath)
+	)
 
-	testContext.DatabaseTestWithSetup(
-		func(harness *integration.HarnessDetails) error {
-			harness.SearchHarness.Setup(testContext)
-			return nil
-		},
-		func(harness integration.HarnessDetails, db graph.Database) {
-			var (
-				userWanted = "USER NUMBER ONE"
-				skip       = 0
-				limit      = 10
-				graphQuery = queries.NewGraphQuery(db, cache.Cache{}, config.Configuration{})
-			)
+	// Populate the graph with data
 
-			results, err := graphQuery.SearchNodesByName(context.Background(), graph.Kinds{azure.Entity, ad.Entity}, userWanted, skip, limit)
-			require.Equal(t, 1, len(results), "There should be one exact match returned")
-			require.Nil(t, err)
-			expectedUser := results[0]
-			require.Equal(t, expectedUser.Name, userWanted)
-		})
+	base, err := generic.LoadGraphFromFile(os.DirFS(testSuite.WorkDir), "base.json")
+	require.NoError(t, err)
+
+	err = generic.WriteGraphToDatabase(testSuite.GraphDB, &base)
+	require.NoError(t, err)
+	return testSuite
 }
 
-func TestSearchNodesByName_FuzzyMatch(t *testing.T) {
-	testContext := integration.NewGraphTestContext(t, schema.DefaultGraphSchema())
+func TestSearchNodesByNameOrObjectId(t *testing.T) {
+	type testData struct {
+		name                      string
+		queryString               string
+		inputArguments            graph.Kinds
+		includeOpenGraphNodes     bool
+		expectedResults           int
+		expectedResultExplanation string
+		shouldMatchUser           bool
+		matchUserField            string
+		shouldMatchType           bool
+		expectedType              string
+		expectedTypeExplanation   string
+	}
+	var (
+		testSuite  = setupGraphDb(t)
+		graphQuery = queries.NewGraphQuery(testSuite.GraphDB, cache.Cache{}, config.Configuration{})
+		testTable  = []testData{
+			{
+				name:                      "Exact Match",
+				queryString:               "USER NUMBER ONE",
+				inputArguments:            graph.Kinds{azure.Entity, ad.Entity},
+				includeOpenGraphNodes:     false,
+				expectedResults:           1,
+				expectedResultExplanation: "There should be one exact match returned",
+				shouldMatchUser:           true,
+				matchUserField:            "Name",
+			},
+			{
+				name:                      "Fuzzy Match",
+				queryString:               "USER NUMBER",
+				inputArguments:            graph.Kinds{azure.Entity, ad.Entity},
+				includeOpenGraphNodes:     false,
+				expectedResults:           5,
+				expectedResultExplanation: "All users that contain `USER_NUMBER` should be returned",
+				shouldMatchUser:           false,
+			},
+			{
+				name:                      "No AD Local Group",
+				queryString:               "Remote Desktop",
+				inputArguments:            graph.Kinds{azure.Entity, ad.Entity},
+				includeOpenGraphNodes:     false,
+				expectedResults:           0,
+				expectedResultExplanation: "No ADLocalGroup nodes should be returned",
+				shouldMatchUser:           false,
+			},
+			{
+				name:                      "Returns OpenGraph results",
+				queryString:               "person",
+				inputArguments:            nil,
+				includeOpenGraphNodes:     true,
+				expectedResults:           3,
+				expectedResultExplanation: "All three OpenGraph nodes should be returned",
+				shouldMatchUser:           false,
+				shouldMatchType:           true,
+				expectedType:              "Person",
+				expectedTypeExplanation:   "All three OpenGraph nodes should have type Person",
+			},
+			{
+				name:                      "Returns Nodes from all Graphs",
+				queryString:               "two",
+				inputArguments:            nil,
+				includeOpenGraphNodes:     true,
+				expectedResults:           2,
+				expectedResultExplanation: "All nodes with `two` in the name should be returned",
+				shouldMatchUser:           false,
+			},
+			{
+				name:                      "Group Local Group Correct",
+				queryString:               "Account Op",
+				inputArguments:            nil,
+				includeOpenGraphNodes:     false,
+				expectedResults:           1,
+				expectedResultExplanation: ":ADLocalGroup nodes should return if they are also :Group nodes",
+				shouldMatchUser:           false,
+			},
+			{
+				name:                      "Exact Match ObjectID",
+				queryString:               "TEST-1",
+				inputArguments:            graph.Kinds{azure.Entity, ad.Entity},
+				expectedResults:           1,
+				includeOpenGraphNodes:     false,
+				expectedResultExplanation: "Only one user can match exactly one Object ID",
+				shouldMatchUser:           true,
+				matchUserField:            "ObjectID",
+			},
+		}
+	)
 
-	testContext.DatabaseTestWithSetup(
-		func(harness *integration.HarnessDetails) error {
-			harness.SearchHarness.Setup(testContext)
-			return nil
-		},
-		func(harness integration.HarnessDetails, db graph.Database) {
-			var (
-				userWanted = "USER NUMBER"
-				skip       = 0
-				limit      = 10
-				graphQuery = queries.NewGraphQuery(db, cache.Cache{}, config.Configuration{})
-			)
+	defer teardownIntegrationTestSuite(t, &testSuite)
 
-			results, err := graphQuery.SearchNodesByName(context.Background(), graph.Kinds{azure.Entity, ad.Entity}, userWanted, skip, limit)
-
+	for _, testCase := range testTable {
+		t.Run(testCase.name, func(t *testing.T) {
+			results, err := graphQuery.SearchNodesByNameOrObjectId(testSuite.Context, testCase.inputArguments, testCase.queryString, testCase.includeOpenGraphNodes, 0, 10, nil)
 			require.Nil(t, err)
-			require.Equal(t, 5, len(results), "All users that contain `USER NUMBER` should be returned ")
+			require.Equal(t, testCase.expectedResults, len(results), testCase.expectedResultExplanation)
+			if testCase.shouldMatchUser {
+				expectedUser := results[0]
+				value := reflect.ValueOf(expectedUser)
+				require.Equal(t, value.FieldByName(testCase.matchUserField).String(), testCase.queryString)
+			}
+			if testCase.shouldMatchType {
+				for _, result := range results {
+					require.Equal(t, testCase.expectedType, result.Type, testCase.expectedTypeExplanation)
+				}
+			}
 		})
+	}
 }
 
-func TestSearchNodesByName_NoADLocalGroup(t *testing.T) {
-	testContext := integration.NewGraphTestContext(t, schema.DefaultGraphSchema())
+func TestSearchByNameOrObjectId(t *testing.T) {
+	type testData struct {
+		name                      string
+		includeOpenGraph          bool
+		searchValue               string
+		searchType                string
+		expectedResults           int
+		expectedResultExplanation string
+		shouldMatchUser           bool
+		matchUserField            string
+	}
+	var (
+		testSuite  = setupGraphDb(t)
+		graphQuery = queries.NewGraphQuery(testSuite.GraphDB, cache.Cache{}, config.Configuration{})
+		testTable  = []testData{
+			{
+				name:                      "Exact Match",
+				includeOpenGraph:          false,
+				searchValue:               "USER NUMBER ONE",
+				searchType:                queries.SearchTypeExact,
+				expectedResults:           1,
+				expectedResultExplanation: "There should be one exact match returned",
+				shouldMatchUser:           true,
+				matchUserField:            "name",
+			},
+			{
+				name:                      "Fuzzy Match",
+				includeOpenGraph:          false,
+				searchValue:               "USER NUMBER",
+				searchType:                queries.SearchTypeFuzzy,
+				expectedResults:           5,
+				expectedResultExplanation: "All users that start with `USER_NUMBER` should be returned",
+				shouldMatchUser:           false,
+			},
+			{
+				name:                      "Returns OpenGraph results",
+				includeOpenGraph:          true,
+				searchValue:               "person",
+				searchType:                queries.SearchTypeFuzzy,
+				expectedResults:           3,
+				expectedResultExplanation: "All three OpenGraph nodes should be returned",
+				shouldMatchUser:           false,
+			},
+			{
+				name:                      "Returns Nodes from all Graphs",
+				includeOpenGraph:          true,
+				searchValue:               "a",
+				searchType:                queries.SearchTypeFuzzy,
+				expectedResults:           2,
+				expectedResultExplanation: "All nodes starting with `a` should be returned",
+				shouldMatchUser:           false,
+			},
+			{
+				name:                      "Exact Match ObjectID",
+				includeOpenGraph:          false,
+				searchValue:               "TEST-1",
+				searchType:                queries.SearchTypeExact,
+				expectedResults:           1,
+				expectedResultExplanation: "Only one user can match exactly one Object ID",
+				shouldMatchUser:           true,
+				matchUserField:            "objectid",
+			},
+			{
+				name:                      "Exact Match OpenGraph Node",
+				includeOpenGraph:          true,
+				searchValue:               "PERSON ONE",
+				searchType:                queries.SearchTypeExact,
+				expectedResults:           1,
+				expectedResultExplanation: "There should be one exact match returned",
+				shouldMatchUser:           true,
+				matchUserField:            "name",
+			},
+		}
+	)
 
-	testContext.DatabaseTestWithSetup(
-		func(harness *integration.HarnessDetails) error {
-			harness.SearchHarness.Setup(testContext)
-			return nil
-		},
-		func(harness integration.HarnessDetails, db graph.Database) {
-			var (
-				userWanted = "Remote Desktop"
-				skip       = 0
-				limit      = 10
-				graphQuery = queries.NewGraphQuery(db, cache.Cache{}, config.Configuration{})
-			)
+	defer teardownIntegrationTestSuite(t, &testSuite)
 
-			results, err := graphQuery.SearchNodesByName(context.Background(), graph.Kinds{azure.Entity, ad.Entity}, userWanted, skip, limit)
-
+	for _, testCase := range testTable {
+		t.Run(testCase.name, func(t *testing.T) {
+			results, err := graphQuery.SearchByNameOrObjectID(testSuite.Context, testCase.includeOpenGraph, testCase.searchValue, testCase.searchType)
 			require.Nil(t, err)
-			require.Equal(t, 0, len(results), "No ADLocalGroup nodes should be returned ")
+			require.Equal(t, testCase.expectedResults, len(results), testCase.expectedResultExplanation)
+			if testCase.shouldMatchUser {
+				var actualResult *graph.Node
+				for _, node := range results {
+					actualResult = node
+					break
+				}
+				actualValue := actualResult.Properties.Map[testCase.matchUserField]
+				require.Equal(t, actualValue, testCase.searchValue)
+			}
 		})
+	}
 }
-
-func TestSearchNodesByName_GroupLocalGroupCorrect(t *testing.T) {
-	testContext := integration.NewGraphTestContext(t, schema.DefaultGraphSchema())
-
-	testContext.DatabaseTestWithSetup(
-		func(harness *integration.HarnessDetails) error {
-			harness.SearchHarness.Setup(testContext)
-			return nil
-		},
-		func(harness integration.HarnessDetails, db graph.Database) {
-			var (
-				groupWanted = "Account Op"
-				skip        = 0
-				limit       = 10
-				graphQuery  = queries.NewGraphQuery(db, cache.Cache{}, config.Configuration{})
-			)
-
-			results, err := graphQuery.SearchNodesByName(context.Background(), graph.Kinds{azure.Entity, ad.Entity}, groupWanted, skip, limit)
-
-			require.Nil(t, err)
-			require.Equal(t, 1, len(results), ":ADLocalGroup nodes should return if they are also :Group nodes")
-		})
-}
-
-func TestSearchNodesByName_ExactMatch_ObjectID(t *testing.T) {
-	testContext := integration.NewGraphTestContext(t, schema.DefaultGraphSchema())
-
-	testContext.DatabaseTestWithSetup(
-		func(harness *integration.HarnessDetails) error {
-			harness.SearchHarness.Setup(testContext)
-			return nil
-		},
-		func(harness integration.HarnessDetails, db graph.Database) {
-			var (
-				userObjectId = harness.SearchHarness.User1.Properties.Get(common.ObjectID.String())
-				skip         = 0
-				limit        = 10
-				graphQuery   = queries.NewGraphQuery(db, cache.Cache{}, config.Configuration{})
-			)
-
-			searchQuery, _ := userObjectId.String()
-
-			results, err := graphQuery.SearchNodesByName(context.Background(), graph.Kinds{azure.Entity, ad.Entity}, searchQuery, skip, limit)
-
-			actual := results[0]
-
-			require.Nil(t, err)
-			require.Equal(t, 1, len(results), "Only one user can match exactly one Object ID")
-			require.Equal(t, searchQuery, actual.ObjectID)
-		})
-}
-
 func TestGetEntityResults(t *testing.T) {
 	testContext := integration.NewGraphTestContext(t, schema.DefaultGraphSchema())
 	queryCache, err := cache.NewCache(cache.Config{MaxSize: 1})
 	require.Nil(t, err)
 
+	testContext.SetupActiveDirectory()
 	testContext.DatabaseTest(func(harness integration.HarnessDetails, db graph.Database) {
 		objectID, err := harness.InboundControl.ControlledUser.Properties.Get(common.ObjectID.String()).String()
 		require.Nil(t, err)
@@ -196,6 +300,7 @@ func TestGetEntityResults_QueryShorterThanSlowQueryThreshold(t *testing.T) {
 	queryCache, err := cache.NewCache(cache.Config{MaxSize: 1})
 	require.Nil(t, err)
 
+	testContext.SetupActiveDirectory()
 	testContext.DatabaseTest(func(harness integration.HarnessDetails, db graph.Database) {
 		objectID, err := harness.InboundControl.ControlledUser.Properties.Get(common.ObjectID.String()).String()
 		require.Nil(t, err)
@@ -224,11 +329,46 @@ func TestGetEntityResults_QueryShorterThanSlowQueryThreshold(t *testing.T) {
 	})
 }
 
+func TestGetPrimaryNodeKindCounts(t *testing.T) {
+	testContext := integration.NewGraphTestContext(t, schema.DefaultGraphSchema())
+
+	testContext.SetupActiveDirectory()
+	testContext.DatabaseTest(func(harness integration.HarnessDetails, db graph.Database) {
+		graphQuery := queries.GraphQuery{
+			Graph: db,
+		}
+
+		results, err := graphQuery.GetPrimaryNodeKindCounts(context.Background(), ad.Entity)
+		require.Nil(t, err)
+
+		// While this is a very thin test, any more specificity would require constant updates each time the harness added new kind
+		require.Greater(t, len(results), 1)
+	})
+}
+
+func TestFetchNodeByGraphId(t *testing.T) {
+	testContext := integration.NewGraphTestContext(t, schema.DefaultGraphSchema())
+
+	testContext.DatabaseTestWithSetup(func(harness *integration.HarnessDetails) error {
+		harness.AZBaseHarness.Setup(testContext)
+		return nil
+	}, func(harness integration.HarnessDetails, db graph.Database) {
+		graphQuery := queries.GraphQuery{Graph: db}
+
+		node, err := graphQuery.FetchNodeByGraphId(context.Background(), harness.AZBaseHarness.User.ID)
+		require.Nil(t, err)
+		require.NotNil(t, node)
+
+		require.Equal(t, harness.AZBaseHarness.User.ID, node.ID)
+	})
+}
+
 func TestGetEntityResults_Cache(t *testing.T) {
 	testContext := integration.NewGraphTestContext(t, schema.DefaultGraphSchema())
 	queryCache, err := cache.NewCache(cache.Config{MaxSize: 2})
 	require.Nil(t, err)
 
+	testContext.SetupActiveDirectory()
 	testContext.DatabaseTest(func(harness integration.HarnessDetails, db graph.Database) {
 		objectID, err := harness.InboundControl.ControlledUser.Properties.Get(common.ObjectID.String()).String()
 		require.Nil(t, err)
@@ -269,6 +409,7 @@ func TestGetEntityResults_Cache(t *testing.T) {
 
 func TestGetAssetGroupComboNode(t *testing.T) {
 	testContext := integration.NewGraphTestContext(t, schema.DefaultGraphSchema())
+	testContext.SetupActiveDirectory()
 	testContext.DatabaseTest(func(harness integration.HarnessDetails, db graph.Database) {
 		graphQuery := queries.NewGraphQuery(db, cache.Cache{}, config.Configuration{})
 		comboNode, err := graphQuery.GetAssetGroupComboNode(context.Background(), "", ad.AdminTierZero)
@@ -277,12 +418,41 @@ func TestGetAssetGroupComboNode(t *testing.T) {
 		groupBObjectID := harness.AssetGroupComboNodeHarness.GroupB.ID.String()
 		groupAObjectID := harness.AssetGroupComboNodeHarness.GroupA.ID.String()
 
-		groupACategory := comboNode[groupAObjectID].(bloodhoundgraph.BloodHoundGraphNode).BloodHoundGraphItem.Data["category"]
-		groupBCategory := comboNode[groupBObjectID].(bloodhoundgraph.BloodHoundGraphNode).BloodHoundGraphItem.Data["category"]
+		groupACategory := comboNode[groupAObjectID].(bloodhoundgraph.BloodHoundGraphNode).Data["category"]
+		groupBCategory := comboNode[groupBObjectID].(bloodhoundgraph.BloodHoundGraphNode).Data["category"]
 
 		// ensure that nodes from within T0 as well as from other domains all have the category tagged
 		require.Equal(t, "Asset Groups", groupACategory)
 		require.Equal(t, "Asset Groups", groupBCategory)
+	})
+}
+
+func TestGetAssetGroupNodes(t *testing.T) {
+	testContext := integration.NewGraphTestContext(t, schema.DefaultGraphSchema())
+	testContext.DatabaseTestWithSetup(func(harness *integration.HarnessDetails) error {
+		harness.AssetGroupNodesHarness.Setup(testContext)
+		return nil
+	}, func(harness integration.HarnessDetails, db graph.Database) {
+		graphQuery := queries.NewGraphQuery(db, cache.Cache{}, config.Configuration{})
+
+		tierZeroNodes, err := graphQuery.GetAssetGroupNodes(context.Background(), harness.AssetGroupNodesHarness.TierZeroTag, true)
+		require.Nil(t, err)
+
+		customGroup1Nodes, err := graphQuery.GetAssetGroupNodes(context.Background(), harness.AssetGroupNodesHarness.CustomTag1, false)
+		require.Nil(t, err)
+
+		customGroup2Nodes, err := graphQuery.GetAssetGroupNodes(context.Background(), harness.AssetGroupNodesHarness.CustomTag2, false)
+		require.Nil(t, err)
+
+		require.True(t, tierZeroNodes.Contains(harness.AssetGroupNodesHarness.GroupB))
+		require.True(t, tierZeroNodes.Contains(harness.AssetGroupNodesHarness.GroupC))
+		require.Equal(t, 2, len(tierZeroNodes))
+
+		require.True(t, customGroup1Nodes.Contains(harness.AssetGroupNodesHarness.GroupD))
+		require.Equal(t, 1, len(customGroup1Nodes))
+
+		require.True(t, customGroup2Nodes.Contains(harness.AssetGroupNodesHarness.GroupE))
+		require.Equal(t, 1, len(customGroup2Nodes))
 	})
 }
 
@@ -332,4 +502,98 @@ func TestGraphQuery_GetAllShortestPaths(t *testing.T) {
 			require.Nil(t, err)
 			require.Equal(t, 0, len(paths))
 		})
+}
+
+func TestGetFilteredAndSortedNodesPaginated(t *testing.T) {
+	testContext := integration.NewGraphTestContext(t, schema.DefaultGraphSchema())
+
+	testContext.SetupActiveDirectory()
+
+	t.Run("Test sort ascending", func(t *testing.T) {
+		testContext.DatabaseTest(func(harness integration.HarnessDetails, db graph.Database) {
+			graphQuery := queries.GraphQuery{
+				Graph: db,
+			}
+
+			results, err := graphQuery.GetFilteredAndSortedNodesPaginated(
+				query.SortItems{{SortCriteria: query.NodeID(), Direction: query.SortDirectionAscending}}, // sort by node ID ascending
+				query.KindIn(query.Node(), ad.User), // give me all the nodes of kind ad.User
+				0,
+				0)
+			require.Nil(t, err)
+			// verify some nodes were returned
+			require.Greater(t, len(results), 10)
+
+			// verify the nodes are sorted ascending by ID
+			prevNodeId := int64(0)
+			for _, node := range results {
+				require.GreaterOrEqual(t, node.ID.Int64(), prevNodeId)
+				prevNodeId = node.ID.Int64()
+			}
+		})
+	})
+
+	t.Run("Test sort descending", func(t *testing.T) {
+		testContext.DatabaseTest(func(harness integration.HarnessDetails, db graph.Database) {
+			graphQuery := queries.GraphQuery{
+				Graph: db,
+			}
+
+			results, err := graphQuery.GetFilteredAndSortedNodesPaginated(
+				query.SortItems{{SortCriteria: query.NodeID(), Direction: query.SortDirectionDescending}}, // sort by node ID descending
+				query.KindIn(query.Node(), ad.User), // give me all the nodes of kind ad.User
+				0,
+				0)
+			require.Nil(t, err)
+			// verify some nodes were returned
+			require.Greater(t, len(results), 10)
+
+			prevNodeId := results[0].ID.Int64()
+			for _, node := range results {
+				require.LessOrEqual(t, node.ID.Int64(), prevNodeId)
+				prevNodeId = node.ID.Int64()
+			}
+		})
+	})
+
+	t.Run("Test limit", func(t *testing.T) {
+		testContext.DatabaseTest(func(harness integration.HarnessDetails, db graph.Database) {
+			graphQuery := queries.GraphQuery{
+				Graph: db,
+			}
+
+			results, err := graphQuery.GetFilteredAndSortedNodesPaginated(
+				query.SortItems{{SortCriteria: query.NodeID(), Direction: query.SortDirectionAscending}}, // sort by node ID Ascending
+				query.KindIn(query.Node(), ad.User), // give me all the nodes of kind ad.User
+				0,
+				5)
+			require.Nil(t, err)
+			require.Len(t, results, 5)
+		})
+	})
+
+	t.Run("Test offset", func(t *testing.T) {
+		testContext.DatabaseTest(func(harness integration.HarnessDetails, db graph.Database) {
+			graphQuery := queries.GraphQuery{
+				Graph: db,
+			}
+
+			results, err := graphQuery.GetFilteredAndSortedNodesPaginated(
+				query.SortItems{{SortCriteria: query.NodeID(), Direction: query.SortDirectionAscending}}, // sort by node ID Ascending
+				query.KindIn(query.Node(), ad.User), // give me all the nodes of kind ad.User
+				0,
+				0)
+			require.Nil(t, err)
+
+			// call again with offset 10, making sure results are properly shifted
+			savedNode := results[10]
+			results, err = graphQuery.GetFilteredAndSortedNodesPaginated(
+				query.SortItems{{SortCriteria: query.NodeID(), Direction: query.SortDirectionAscending}}, // sort by node ID Ascending
+				query.KindIn(query.Node(), ad.User), // give me all the nodes of kind ad.User
+				10,
+				0)
+			require.Nil(t, err)
+			require.Equal(t, savedNode, results[0])
+		})
+	})
 }

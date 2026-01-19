@@ -20,12 +20,12 @@ import (
 	"net/http"
 	"testing"
 
-	"github.com/specterops/bloodhound/dawgs/graph"
-	"github.com/specterops/bloodhound/graphschema/ad"
-	"github.com/specterops/bloodhound/graphschema/azure"
-	"github.com/specterops/bloodhound/graphschema/common"
-	"github.com/specterops/bloodhound/src/api"
-	"github.com/specterops/bloodhound/src/model"
+	"github.com/specterops/bloodhound/cmd/api/src/api"
+	"github.com/specterops/bloodhound/cmd/api/src/model"
+	"github.com/specterops/bloodhound/packages/go/graphschema/ad"
+	"github.com/specterops/bloodhound/packages/go/graphschema/azure"
+	"github.com/specterops/bloodhound/packages/go/graphschema/common"
+	"github.com/specterops/dawgs/graph"
 	"github.com/stretchr/testify/require"
 )
 
@@ -100,7 +100,7 @@ func TestParseAGMembersFromNodes_(t *testing.T) {
 
 func TestParseAGMembersFromNodes_MissingNodeProperties(t *testing.T) {
 	nodes := graph.NodeSet{
-		// the parse fn should handle nodes with missing name and missing properties with warnings and no output
+		// the parse fn should handle nodes with missing name and missing properties with warnings
 		1: &graph.Node{
 			ID:    1,
 			Kinds: graph.Kinds{ad.Entity, ad.Domain},
@@ -125,5 +125,5 @@ func TestParseAGMembersFromNodes_MissingNodeProperties(t *testing.T) {
 			SystemSelector: false,
 		}}, 1)
 
-	require.Equal(t, 0, len(members))
+	require.Equal(t, 2, len(members))
 }

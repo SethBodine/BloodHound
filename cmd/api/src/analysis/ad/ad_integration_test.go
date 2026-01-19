@@ -15,22 +15,26 @@
 // SPDX-License-Identifier: Apache-2.0
 
 //go:build integration
-// +build integration
 
 package ad_test
 
 import (
 	"context"
-	schema "github.com/specterops/bloodhound/graphschema"
-	"github.com/specterops/bloodhound/src/test"
 	"testing"
 
-	"github.com/specterops/bloodhound/analysis"
-	adAnalysis "github.com/specterops/bloodhound/analysis/ad"
-	"github.com/specterops/bloodhound/dawgs/graph"
-	"github.com/specterops/bloodhound/graphschema/ad"
-	"github.com/specterops/bloodhound/graphschema/common"
-	"github.com/specterops/bloodhound/src/test/integration"
+	"github.com/specterops/bloodhound/cmd/api/src/test"
+	"github.com/specterops/bloodhound/packages/go/analysis"
+	schema "github.com/specterops/bloodhound/packages/go/graphschema"
+	"github.com/specterops/bloodhound/packages/go/lab/arrows"
+	"github.com/stretchr/testify/assert"
+
+	"github.com/specterops/bloodhound/cmd/api/src/test/integration"
+	adAnalysis "github.com/specterops/bloodhound/packages/go/analysis/ad"
+	"github.com/specterops/bloodhound/packages/go/graphschema/ad"
+	"github.com/specterops/bloodhound/packages/go/graphschema/common"
+	"github.com/specterops/dawgs/graph"
+	"github.com/specterops/dawgs/ops"
+	"github.com/specterops/dawgs/query"
 	"github.com/stretchr/testify/require"
 )
 
@@ -53,6 +57,68 @@ func TestFetchEnforcedGPOs(t *testing.T) {
 
 		test.RequireNilErr(t, err)
 		require.Equal(t, 2, enforcedGPOs.Len())
+	})
+}
+
+func TestFetchEnforcedGPOsPaths(t *testing.T) {
+	testContext := integration.NewGraphTestContext(t, schema.DefaultGraphSchema())
+	testContext.DatabaseTestWithSetup(func(harness *integration.HarnessDetails) error {
+		harness.GPOEnforcement.Setup(testContext)
+		return nil
+	}, func(harness integration.HarnessDetails, db graph.Database) {
+		// OU A blocks inheritance, but is contained by the domain GPLinked by both GPOs. We should see both GPOs in this path.
+		path, err := adAnalysis.FetchEnforcedGPOsPaths(context.Background(), db, harness.GPOEnforcement.OrganizationalUnitA)
+		test.RequireNilErr(t, err)
+		nodes := path.AllNodes().IDs()
+		require.Equal(t, 4, len(nodes))
+		require.Contains(t, nodes, harness.GPOEnforcement.OrganizationalUnitA.ID)
+		require.Contains(t, nodes, harness.GPOEnforcement.Domain.ID)
+		require.Contains(t, nodes, harness.GPOEnforcement.GPOEnforced.ID)
+		require.Contains(t, nodes, harness.GPOEnforcement.GPOUnenforced.ID)
+
+		// OU C is contained by OU A which blocks inheritance - so we should only see the enforced GPO in this path.
+		path, err = adAnalysis.FetchEnforcedGPOsPaths(context.Background(), db, harness.GPOEnforcement.OrganizationalUnitC)
+		test.RequireNilErr(t, err)
+		nodes = path.AllNodes().IDs()
+		require.Equal(t, 4, len(nodes))
+		require.Contains(t, nodes, harness.GPOEnforcement.OrganizationalUnitC.ID)
+		require.Contains(t, nodes, harness.GPOEnforcement.OrganizationalUnitA.ID)
+		require.Contains(t, nodes, harness.GPOEnforcement.Domain.ID)
+		require.Contains(t, nodes, harness.GPOEnforcement.GPOEnforced.ID)
+
+		// OU D is contained by OU B which does not block inheritance - so we should see both GPOs in this path.
+		path, err = adAnalysis.FetchEnforcedGPOsPaths(context.Background(), db, harness.GPOEnforcement.OrganizationalUnitD)
+		test.RequireNilErr(t, err)
+		nodes = path.AllNodes().IDs()
+		require.Equal(t, 5, len(nodes))
+		require.Contains(t, nodes, harness.GPOEnforcement.OrganizationalUnitD.ID)
+		require.Contains(t, nodes, harness.GPOEnforcement.OrganizationalUnitB.ID)
+		require.Contains(t, nodes, harness.GPOEnforcement.Domain.ID)
+		require.Contains(t, nodes, harness.GPOEnforcement.GPOEnforced.ID)
+		require.Contains(t, nodes, harness.GPOEnforcement.GPOUnenforced.ID)
+
+		// User C is contained by OU C which is contained by OU A - OU A blocks inheritance it should only be affected by the enforced GPO.
+		path, err = adAnalysis.FetchEnforcedGPOsPaths(context.Background(), db, harness.GPOEnforcement.UserC)
+		test.RequireNilErr(t, err)
+		nodes = path.AllNodes().IDs()
+		require.Equal(t, 5, len(nodes))
+		require.Contains(t, nodes, harness.GPOEnforcement.UserC.ID)
+		require.Contains(t, nodes, harness.GPOEnforcement.OrganizationalUnitC.ID)
+		require.Contains(t, nodes, harness.GPOEnforcement.OrganizationalUnitA.ID)
+		require.Contains(t, nodes, harness.GPOEnforcement.Domain.ID)
+		require.Contains(t, nodes, harness.GPOEnforcement.GPOEnforced.ID)
+
+		// User D is contained by OU D which is contained by OU B - none of them block inheritance so it should be affected by both GPOs.
+		path, err = adAnalysis.FetchEnforcedGPOsPaths(context.Background(), db, harness.GPOEnforcement.UserD)
+		test.RequireNilErr(t, err)
+		nodes = path.AllNodes().IDs()
+		require.Equal(t, 6, len(nodes))
+		require.Contains(t, nodes, harness.GPOEnforcement.UserD.ID)
+		require.Contains(t, nodes, harness.GPOEnforcement.OrganizationalUnitD.ID)
+		require.Contains(t, nodes, harness.GPOEnforcement.OrganizationalUnitB.ID)
+		require.Contains(t, nodes, harness.GPOEnforcement.Domain.ID)
+		require.Contains(t, nodes, harness.GPOEnforcement.GPOEnforced.ID)
+		require.Contains(t, nodes, harness.GPOEnforcement.GPOUnenforced.ID)
 	})
 }
 
@@ -839,41 +905,6 @@ func TestCreateDomainTrustListDelegate(t *testing.T) {
 	})
 }
 
-func TestGetDCSyncers(t *testing.T) {
-	testContext := integration.NewGraphTestContext(t, schema.DefaultGraphSchema())
-
-	// XXX: Why does this need a WriteTransaction to run?
-	testContext.WriteTransactionTestWithSetup(func(harness *integration.HarnessDetails) error {
-		harness.TrustDCSync.Setup(testContext)
-		return nil
-	}, func(harness integration.HarnessDetails, tx graph.Transaction) {
-		dcSyncers, err := analysis.GetDCSyncers(tx, harness.TrustDCSync.DomainA, true)
-
-		test.RequireNilErr(t, err)
-		require.Equal(t, 2, len(dcSyncers))
-		ids := make([]graph.ID, len(dcSyncers))
-		for _, node := range dcSyncers {
-			ids = append(ids, node.ID)
-		}
-		require.Contains(t, ids, harness.TrustDCSync.UserA.ID)
-		require.Contains(t, ids, harness.TrustDCSync.UserB.ID)
-
-		harness.TrustDCSync.UserA.Properties.Set(common.SystemTags.String(), ad.AdminTierZero)
-		tx.UpdateNode(harness.TrustDCSync.UserA)
-
-		dcSyncers, err = analysis.GetDCSyncers(tx, harness.TrustDCSync.DomainA, true)
-
-		test.RequireNilErr(t, err)
-		require.Equal(t, 1, len(dcSyncers))
-		ids = make([]graph.ID, len(dcSyncers))
-		for _, node := range dcSyncers {
-			ids = append(ids, node.ID)
-		}
-		require.NotContains(t, ids, harness.TrustDCSync.UserA.ID)
-		require.Contains(t, ids, harness.TrustDCSync.UserB.ID)
-	})
-}
-
 func TestFetchDCSyncers(t *testing.T) {
 	testContext := integration.NewGraphTestContext(t, schema.DefaultGraphSchema())
 
@@ -1060,29 +1091,616 @@ func TestFetchEntityLinkedGPOPaths(t *testing.T) {
 }
 
 func TestFetchLocalGroupCompleteness(t *testing.T) {
-	testContext := integration.NewGraphTestContext(t, schema.DefaultGraphSchema())
+	var (
+		testCtx = integration.NewGraphTestContext(t, schema.DefaultGraphSchema())
+		graphDB = testCtx.Graph.Database
+	)
 
-	testContext.ReadTransactionTestWithSetup(func(harness *integration.HarnessDetails) error {
-		harness.Completeness.Setup(testContext)
+	fixture, err := arrows.LoadGraphFromFile(integration.Harnesses, "harnesses/completenessharness.json")
+	require.NoError(t, err)
+
+	err = arrows.WriteGraphToDatabase(graphDB, &fixture)
+	require.NoError(t, err)
+
+	err = graphDB.ReadTransaction(testCtx.Context(), func(tx graph.Transaction) error {
+		// why does this function ask for a transaction type?
+		completeness, err := adAnalysis.FetchLocalGroupCompleteness(tx, "DOMAIN123")
+		require.NoError(t, err)
+		assert.Equal(t, .5, completeness)
 		return nil
-	}, func(harness integration.HarnessDetails, tx graph.Transaction) {
-		completeness, err := adAnalysis.FetchLocalGroupCompleteness(tx, harness.Completeness.DomainSid)
-
-		test.RequireNilErr(t, err)
-		require.Equal(t, .5, completeness)
 	})
+	assert.NoError(t, err)
 }
 
 func TestFetchUserSessionCompleteness(t *testing.T) {
+	var (
+		testCtx = integration.NewGraphTestContext(t, schema.DefaultGraphSchema())
+		graphDB = testCtx.Graph.Database
+	)
+
+	fixture, err := arrows.LoadGraphFromFile(integration.Harnesses, "harnesses/completenessharness.json")
+	require.NoError(t, err)
+
+	err = arrows.WriteGraphToDatabase(graphDB, &fixture)
+	require.NoError(t, err)
+
+	err = graphDB.ReadTransaction(testCtx.Context(), func(tx graph.Transaction) error {
+		// why does this function ask for a transaction type?
+		completeness, err := adAnalysis.FetchUserSessionCompleteness(tx, "DOMAIN123")
+		require.NoError(t, err)
+		assert.Equal(t, .5, completeness)
+		return nil
+	})
+	assert.NoError(t, err)
+}
+
+func TestSyncLAPSPassword(t *testing.T) {
 	testContext := integration.NewGraphTestContext(t, schema.DefaultGraphSchema())
 
-	testContext.ReadTransactionTestWithSetup(func(harness *integration.HarnessDetails) error {
-		harness.Completeness.Setup(testContext)
+	testContext.DatabaseTestWithSetup(func(harness *integration.HarnessDetails) error {
+		harness.SyncLAPSPasswordHarness.Setup(testContext)
 		return nil
-	}, func(harness integration.HarnessDetails, tx graph.Transaction) {
-		completeness, err := adAnalysis.FetchUserSessionCompleteness(tx, harness.Completeness.DomainSid)
+	}, func(harness integration.HarnessDetails, db graph.Database) {
+		if groupExpansions, err := adAnalysis.ExpandAllRDPLocalGroups(testContext.Context(), db); err != nil {
+			t.Fatalf("error expanding groups in integration test; %v", err)
+		} else if _, err := adAnalysis.PostSyncLAPSPassword(testContext.Context(), db, groupExpansions); err != nil {
+			t.Fatalf("error creating SyncLAPSPassword edges in integration test; %v", err)
+		} else {
+			db.ReadTransaction(context.Background(), func(tx graph.Transaction) error {
+				if results, err := ops.FetchStartNodes(tx.Relationships().Filterf(func() graph.Criteria {
+					return query.Kind(query.Relationship(), ad.SyncLAPSPassword)
+				})); err != nil {
+					t.Fatalf("error fetching SyncLAPSPassword edges in integration test; %v", err)
+				} else {
+					require.Equal(t, 4, len(results))
 
-		test.RequireNilErr(t, err)
-		require.Equal(t, .5, completeness)
+					require.True(t, results.Contains(harness.SyncLAPSPasswordHarness.Group1))
+					require.True(t, results.Contains(harness.SyncLAPSPasswordHarness.Group4))
+					require.True(t, results.Contains(harness.SyncLAPSPasswordHarness.User3))
+					require.True(t, results.Contains(harness.SyncLAPSPasswordHarness.User5))
+				}
+				return nil
+			})
+		}
+	})
+}
+
+func TestDCSync(t *testing.T) {
+	testContext := integration.NewGraphTestContext(t, schema.DefaultGraphSchema())
+
+	testContext.DatabaseTestWithSetup(func(harness *integration.HarnessDetails) error {
+		harness.DCSyncHarness.Setup(testContext)
+		return nil
+	}, func(harness integration.HarnessDetails, db graph.Database) {
+		if groupExpansions, err := adAnalysis.ExpandAllRDPLocalGroups(testContext.Context(), db); err != nil {
+			t.Fatalf("error expanding groups in integration test; %v", err)
+		} else if _, err := adAnalysis.PostDCSync(testContext.Context(), db, groupExpansions); err != nil {
+			t.Fatalf("error creating DCSync edges in integration test; %v", err)
+		} else {
+			db.ReadTransaction(context.Background(), func(tx graph.Transaction) error {
+				if results, err := ops.FetchStartNodes(tx.Relationships().Filterf(func() graph.Criteria {
+					return query.Kind(query.Relationship(), ad.DCSync)
+				})); err != nil {
+					t.Fatalf("error fetching DCSync edges in integration test; %v", err)
+				} else {
+					require.Equal(t, 3, len(results))
+
+					require.True(t, results.Contains(harness.DCSyncHarness.User1))
+					require.True(t, results.Contains(harness.DCSyncHarness.User2))
+					require.True(t, results.Contains(harness.DCSyncHarness.Group3))
+
+				}
+				return nil
+			})
+		}
+	})
+}
+
+func TestOwnsWriteOwnerPriorCollectorVersions(t *testing.T) {
+	testContext := integration.NewGraphTestContext(t, schema.DefaultGraphSchema())
+
+	testContext.DatabaseTestWithSetup(func(harness *integration.HarnessDetails) error {
+		harness.OwnsWriteOwnerPriorCollectorVersions.Setup(testContext)
+		// To verify in Neo4j: MATCH (n:Computer) MATCH (u:User) RETURN n, u
+		return nil
+	}, func(harness integration.HarnessDetails, db graph.Database) {
+		if groupExpansions, err := adAnalysis.ExpandAllRDPLocalGroups(testContext.Context(), db); err != nil {
+			t.Fatalf("error expanding groups in integration test; %v", err)
+		} else if _, err := adAnalysis.PostOwnsAndWriteOwner(testContext.Context(), db, groupExpansions); err != nil {
+			t.Fatalf("error creating Owns/WriteOwner edges in integration test; %v", err)
+		} else {
+			db.ReadTransaction(context.Background(), func(tx graph.Transaction) error {
+
+				// Owns: MATCH (a)-[r:Owns]->(b) RETURN a, r, b;
+				if results, err := ops.FetchRelationships(tx.Relationships().Filterf(func() graph.Criteria {
+					return query.And(
+						query.Kind(query.Relationship(), ad.Owns),
+						query.Kind(query.Start(), ad.Entity),
+					)
+				})); err != nil {
+					t.Fatalf("error fetching Owns edges in integration test; %v", err)
+				} else {
+					require.Equal(t, 14, len(results))
+
+					for _, rel := range results {
+						if startNode, err := ops.FetchNode(tx, rel.StartID); err != nil {
+							t.Fatalf("error fetching start node in integration test; %v", err)
+						} else if targetNode, err := ops.FetchNode(tx, rel.EndID); err != nil {
+							t.Fatalf("error fetching target node in integration test; %v", err)
+						} else {
+							// Extract 'name' properties from startNode and targetNode
+							startNodeName, okStart := startNode.Properties.Map["name"].(string)
+							if !okStart {
+								startNodeName = "<unknown>"
+							}
+							targetNodeName, okTarget := targetNode.Properties.Map["name"].(string)
+							if !okTarget {
+								targetNodeName = "<unknown>"
+							}
+
+							switch targetNode.ID {
+							case harness.OwnsWriteOwnerPriorCollectorVersions.Domain1_User1_NoOwnerRights_OwnerIsLowPriv.ID:
+								// Domain1_User101_Owner -[Owns]-> Domain1_User1_NoOwnerRights_OwnerIsLowPriv
+								require.Equal(t, harness.OwnsWriteOwnerPriorCollectorVersions.Domain1_User101_Owner.ID, startNode.ID)
+
+							case harness.OwnsWriteOwnerPriorCollectorVersions.Domain1_Computer2_NoOwnerRights_OwnerIsDA.ID:
+								// Domain1_User102_DomainAdmin -[Owns]-> Domain1_Computer2_NoOwnerRights_OwnerIsDA
+								require.Equal(t, harness.OwnsWriteOwnerPriorCollectorVersions.Domain1_User102_DomainAdmin.ID, startNode.ID)
+
+							case harness.OwnsWriteOwnerPriorCollectorVersions.Domain1_MSA2_NoOwnerRights_OwnerIsDA.ID:
+								// Domain1_User102_DomainAdmin -[Owns]-> Domain1_MSA2_NoOwnerRights_OwnerIsDA
+								require.Equal(t, harness.OwnsWriteOwnerPriorCollectorVersions.Domain1_User102_DomainAdmin.ID, startNode.ID)
+
+							case harness.OwnsWriteOwnerPriorCollectorVersions.Domain1_GMSA2_NoOwnerRights_OwnerIsDA.ID:
+								// Domain1_User102_DomainAdmin -[Owns]-> Domain1_GMSA2_NoOwnerRights_OwnerIsDA
+								require.Equal(t, harness.OwnsWriteOwnerPriorCollectorVersions.Domain1_User102_DomainAdmin.ID, startNode.ID)
+
+							case harness.OwnsWriteOwnerPriorCollectorVersions.Domain1_User2_NoOwnerRights_OwnerIsDA.ID:
+								// Domain1_User102_DomainAdmin -[Owns]-> Domain1_User2_NoOwnerRights_OwnerIsDA
+								require.Equal(t, harness.OwnsWriteOwnerPriorCollectorVersions.Domain1_User102_DomainAdmin.ID, startNode.ID)
+
+							case harness.OwnsWriteOwnerPriorCollectorVersions.Domain1_Computer3_NoOwnerRights_OwnerIsEA.ID:
+								// Domain1_User103_EnterpriseAdmin -[Owns]-> Domain1_Computer3_NoOwnerRights_OwnerIsEA
+								require.Equal(t, harness.OwnsWriteOwnerPriorCollectorVersions.Domain1_User103_EnterpriseAdmin.ID, startNode.ID)
+
+							case harness.OwnsWriteOwnerPriorCollectorVersions.Domain1_MSA3_NoOwnerRights_OwnerIsEA.ID:
+								// Domain1_User103_EnterpriseAdmin -[Owns]-> Domain1_MSA3_NoOwnerRights_OwnerIsEA
+								require.Equal(t, harness.OwnsWriteOwnerPriorCollectorVersions.Domain1_User103_EnterpriseAdmin.ID, startNode.ID)
+
+							case harness.OwnsWriteOwnerPriorCollectorVersions.Domain1_GMSA3_NoOwnerRights_OwnerIsEA.ID:
+								// Domain1_User103_EnterpriseAdmin -[Owns]-> Domain1_GMSA3_NoOwnerRights_OwnerIsEA
+								require.Equal(t, harness.OwnsWriteOwnerPriorCollectorVersions.Domain1_User103_EnterpriseAdmin.ID, startNode.ID)
+
+							case harness.OwnsWriteOwnerPriorCollectorVersions.Domain1_User3_NoOwnerRights_OwnerIsEA.ID:
+								// Domain1_User103_EnterpriseAdmin -[Owns]-> Domain1_User3_NoOwnerRights_OwnerIsEA
+								require.Equal(t, harness.OwnsWriteOwnerPriorCollectorVersions.Domain1_User103_EnterpriseAdmin.ID, startNode.ID)
+
+							case harness.OwnsWriteOwnerPriorCollectorVersions.Domain2_Computer1_NoOwnerRights.ID:
+								// Domain2_User1_Owner -[Owns]-> Domain2_Computer1_NoOwnerRights
+								require.Equal(t, harness.OwnsWriteOwnerPriorCollectorVersions.Domain2_User1_Owner.ID, startNode.ID)
+
+								//
+								// Below here are the expected false positives present after post-processing data from the prior collector versions
+								//
+
+							case harness.OwnsWriteOwnerPriorCollectorVersions.Domain1_User7_OnlyNonabusableOwnerRightsAndNoneInherited.ID:
+								// Domain1_User101_Owner -[Owns]-> Domain1_User7_OnlyNonabusableOwnerRightsAndNoneInherited
+								require.Equal(t, harness.OwnsWriteOwnerPriorCollectorVersions.Domain1_User101_Owner.ID, startNode.ID)
+
+							case harness.OwnsWriteOwnerPriorCollectorVersions.Domain1_User8_OnlyNonabusableOwnerRightsInherited.ID:
+								// Domain1_User101_Owner -[Owns]-> Domain1_User8_OnlyNonabusableOwnerRightsInherited
+								require.Equal(t, harness.OwnsWriteOwnerPriorCollectorVersions.Domain1_User101_Owner.ID, startNode.ID)
+
+							case harness.OwnsWriteOwnerPriorCollectorVersions.Domain2_Computer5_OnlyNonabusableOwnerRightsAndNoneInherited.ID:
+								// Domain2_User1_Owner -[Owns]-> Domain2_Computer5_OnlyNonabusableOwnerRightsAndNoneInherited
+								require.Equal(t, harness.OwnsWriteOwnerPriorCollectorVersions.Domain2_User1_Owner.ID, startNode.ID)
+
+							case harness.OwnsWriteOwnerPriorCollectorVersions.Domain2_Computer6_OnlyNonabusableOwnerRightsInherited.ID:
+								// Domain2_User1_Owner -[Owns]-> Domain2_Computer6_OnlyNonabusableOwnerRightsInherited
+								require.Equal(t, harness.OwnsWriteOwnerPriorCollectorVersions.Domain2_User1_Owner.ID, startNode.ID)
+
+							default:
+								t.Fatalf("unexpected edge in integration test: %s -[Owns]-> %s", startNodeName, targetNodeName)
+							}
+						}
+					}
+				}
+
+				// WriteOwner: MATCH (a)-[r:WriteOwner]->(b) RETURN a, r, b;
+				if results, err := ops.FetchRelationships(tx.Relationships().Filterf(func() graph.Criteria {
+					return query.And(
+						query.Kind(query.Relationship(), ad.WriteOwner),
+						query.Kind(query.Start(), ad.Entity),
+					)
+				})); err != nil {
+					t.Fatalf("error fetching WriteOwner edges in integration test; %v", err)
+				} else {
+					require.Equal(t, 12, len(results))
+
+					for _, rel := range results {
+						if startNode, err := ops.FetchNode(tx, rel.StartID); err != nil {
+							t.Fatalf("error fetching start node in integration test; %v", err)
+						} else if targetNode, err := ops.FetchNode(tx, rel.EndID); err != nil {
+							t.Fatalf("error fetching target node in integration test; %v", err)
+						} else {
+							// Extract 'name' properties from startNode and targetNode
+							startNodeName, okStart := startNode.Properties.Map["name"].(string)
+							if !okStart {
+								startNodeName = "<unknown>"
+							}
+							targetNodeName, okTarget := targetNode.Properties.Map["name"].(string)
+							if !okTarget {
+								targetNodeName = "<unknown>"
+							}
+
+							switch targetNode.ID {
+							case harness.OwnsWriteOwnerPriorCollectorVersions.Domain1_User1_NoOwnerRights_OwnerIsLowPriv.ID:
+								// Domain1_User104_WriteOwner -[WriteOwner]-> Domain1_User1_NoOwnerRights_OwnerIsLowPriv
+								require.Equal(t, harness.OwnsWriteOwnerPriorCollectorVersions.Domain1_User104_WriteOwner.ID, startNode.ID)
+
+							case harness.OwnsWriteOwnerPriorCollectorVersions.Domain1_User2_NoOwnerRights_OwnerIsDA.ID:
+								// Domain1_User104_WriteOwner -[WriteOwner]-> Domain1_User2_NoOwnerRights_OwnerIsDA
+								require.Equal(t, harness.OwnsWriteOwnerPriorCollectorVersions.Domain1_User104_WriteOwner.ID, startNode.ID)
+
+							case harness.OwnsWriteOwnerPriorCollectorVersions.Domain1_User3_NoOwnerRights_OwnerIsEA.ID:
+								// Domain1_User104_WriteOwner -[WriteOwner]-> Domain1_User3_NoOwnerRights_OwnerIsEA
+								require.Equal(t, harness.OwnsWriteOwnerPriorCollectorVersions.Domain1_User104_WriteOwner.ID, startNode.ID)
+
+							case harness.OwnsWriteOwnerPriorCollectorVersions.Domain1_User4_AbusableOwnerRightsNoneInherited.ID:
+								// Domain1_User104_WriteOwner -[WriteOwner]-> Domain1_User4_NoOwnerRights_OwnerIsEA
+								require.Equal(t, harness.OwnsWriteOwnerPriorCollectorVersions.Domain1_User104_WriteOwner.ID, startNode.ID)
+
+							case harness.OwnsWriteOwnerPriorCollectorVersions.Domain1_User7_OnlyNonabusableOwnerRightsAndNoneInherited.ID:
+								// Domain1_User104_WriteOwner -[WriteOwner]-> Domain1_User7_OnlyNonabusableOwnerRightsAndNoneInherited
+								require.Equal(t, harness.OwnsWriteOwnerPriorCollectorVersions.Domain1_User104_WriteOwner.ID, startNode.ID)
+
+							case harness.OwnsWriteOwnerPriorCollectorVersions.Domain2_Computer1_NoOwnerRights.ID:
+								// Domain2_User2_WriteOwner -[WriteOwner]-> Domain2_Computer1_NoOwnerRights
+								require.Equal(t, harness.OwnsWriteOwnerPriorCollectorVersions.Domain2_User2_WriteOwner.ID, startNode.ID)
+
+							case harness.OwnsWriteOwnerPriorCollectorVersions.Domain2_Computer2_AbusableOwnerRightsNoneInherited.ID:
+								// Domain2_User2_WriteOwner -[WriteOwner]-> Domain2_Computer2_AbusableOwnerRightsNoneInherited
+								require.Equal(t, harness.OwnsWriteOwnerPriorCollectorVersions.Domain2_User2_WriteOwner.ID, startNode.ID)
+
+							case harness.OwnsWriteOwnerPriorCollectorVersions.Domain2_Computer5_OnlyNonabusableOwnerRightsAndNoneInherited.ID:
+								// Domain2_User2_WriteOwner -[WriteOwner]-> Domain2_Computer5_OnlyNonabusableOwnerRightsAndNoneInherited
+								require.Equal(t, harness.OwnsWriteOwnerPriorCollectorVersions.Domain2_User2_WriteOwner.ID, startNode.ID)
+
+								//
+								// Below here are the expected false positives present after post-processing data from the prior collector versions
+								//
+
+							case harness.OwnsWriteOwnerPriorCollectorVersions.Domain1_User6_AbusableOwnerRightsOnlyNonabusableInherited.ID:
+								// Domain1_User101_Owner -[WriteOwner]-> Domain1_User6_AbusableOwnerRightsOnlyNonabusableInherited
+								require.Equal(t, harness.OwnsWriteOwnerPriorCollectorVersions.Domain1_User104_WriteOwner.ID, startNode.ID)
+
+							case harness.OwnsWriteOwnerPriorCollectorVersions.Domain1_User8_OnlyNonabusableOwnerRightsInherited.ID:
+								// Domain1_User101_Owner -[WriteOwner]-> Domain1_User8_OnlyNonabusableOwnerRightsInherited
+								require.Equal(t, harness.OwnsWriteOwnerPriorCollectorVersions.Domain1_User104_WriteOwner.ID, startNode.ID)
+
+							case harness.OwnsWriteOwnerPriorCollectorVersions.Domain2_Computer4_AbusableOwnerRightsOnlyNonabusableInherited.ID:
+								// Domain2_User2_WriteOwner -[WriteOwner]-> Domain2_Computer4_AbusableOwnerRightsOnlyNonabusableInherited
+								require.Equal(t, harness.OwnsWriteOwnerPriorCollectorVersions.Domain2_User2_WriteOwner.ID, startNode.ID)
+
+							case harness.OwnsWriteOwnerPriorCollectorVersions.Domain2_Computer6_OnlyNonabusableOwnerRightsInherited.ID:
+								// Domain2_User2_WriteOwner -[WriteOwner]-> Domain2_Computer6_OnlyNonabusableOwnerRightsInherited
+								require.Equal(t, harness.OwnsWriteOwnerPriorCollectorVersions.Domain2_User2_WriteOwner.ID, startNode.ID)
+
+							default:
+								t.Fatalf("unexpected edge in integration test: %s -[Owns]-> %s", startNodeName, targetNodeName)
+							}
+						}
+					}
+				}
+
+				return nil
+			})
+		}
+	})
+}
+
+func TestOwnsWriteOwner(t *testing.T) {
+	testContext := integration.NewGraphTestContext(t, schema.DefaultGraphSchema())
+
+	testContext.DatabaseTestWithSetup(func(harness *integration.HarnessDetails) error {
+		harness.OwnsWriteOwner.Setup(testContext)
+		// To verify in Neo4j: MATCH (n:Computer) MATCH (u:User) RETURN n, u
+		return nil
+	}, func(harness integration.HarnessDetails, db graph.Database) {
+		if groupExpansions, err := adAnalysis.ExpandAllRDPLocalGroups(testContext.Context(), db); err != nil {
+			t.Fatalf("error expanding groups in integration test; %v", err)
+		} else if _, err := adAnalysis.PostOwnsAndWriteOwner(testContext.Context(), db, groupExpansions); err != nil {
+			t.Fatalf("error creating Owns/WriteOwner edges in integration test; %v", err)
+		} else {
+			db.ReadTransaction(context.Background(), func(tx graph.Transaction) error {
+
+				// Owns: MATCH (a)-[r:Owns]->(b) RETURN a, r, b;
+				if results, err := ops.FetchRelationships(tx.Relationships().Filterf(func() graph.Criteria {
+					return query.And(
+						query.Kind(query.Relationship(), ad.Owns),
+						query.Kind(query.Start(), ad.Entity),
+					)
+				})); err != nil {
+					t.Fatalf("error fetching Owns edges in integration test; %v", err)
+				} else {
+					require.Equal(t, 10, len(results))
+
+					for _, rel := range results {
+						if startNode, err := ops.FetchNode(tx, rel.StartID); err != nil {
+							t.Fatalf("error fetching start node in integration test; %v", err)
+						} else if targetNode, err := ops.FetchNode(tx, rel.EndID); err != nil {
+							t.Fatalf("error fetching target node in integration test; %v", err)
+						} else {
+							// Extract 'name' properties from startNode and targetNode
+							startNodeName, okStart := startNode.Properties.Map["name"].(string)
+							if !okStart {
+								startNodeName = "<unknown>"
+							}
+							targetNodeName, okTarget := targetNode.Properties.Map["name"].(string)
+							if !okTarget {
+								targetNodeName = "<unknown>"
+							}
+
+							switch targetNode.ID {
+							case harness.OwnsWriteOwner.Domain1_User1_NoOwnerRights_OwnerIsLowPriv.ID:
+								// Domain1_User101_Owner -[Owns]-> Domain1_User1_NoOwnerRights_OwnerIsLowPriv
+								require.Equal(t, harness.OwnsWriteOwner.Domain1_User101_Owner.ID, startNode.ID)
+
+							case harness.OwnsWriteOwner.Domain1_Computer2_NoOwnerRights_OwnerIsDA.ID:
+								// Domain1_User102_DomainAdmin -[Owns]-> Domain1_Computer2_NoOwnerRights_OwnerIsDA
+								require.Equal(t, harness.OwnsWriteOwner.Domain1_User102_DomainAdmin.ID, startNode.ID)
+
+							case harness.OwnsWriteOwner.Domain1_MSA2_NoOwnerRights_OwnerIsDA.ID:
+								// Domain1_User102_DomainAdmin -[Owns]-> Domain1_MSA2_NoOwnerRights_OwnerIsDA
+								require.Equal(t, harness.OwnsWriteOwner.Domain1_User102_DomainAdmin.ID, startNode.ID)
+
+							case harness.OwnsWriteOwner.Domain1_GMSA2_NoOwnerRights_OwnerIsDA.ID:
+								// Domain1_User102_DomainAdmin -[Owns]-> Domain1_GMSA2_NoOwnerRights_OwnerIsDA
+								require.Equal(t, harness.OwnsWriteOwner.Domain1_User102_DomainAdmin.ID, startNode.ID)
+
+							case harness.OwnsWriteOwner.Domain1_User2_NoOwnerRights_OwnerIsDA.ID:
+								// Domain1_User102_DomainAdmin -[Owns]-> Domain1_User2_NoOwnerRights_OwnerIsDA
+								require.Equal(t, harness.OwnsWriteOwner.Domain1_User102_DomainAdmin.ID, startNode.ID)
+
+							case harness.OwnsWriteOwner.Domain1_Computer3_NoOwnerRights_OwnerIsEA.ID:
+								// Domain1_User103_EnterpriseAdmin -[Owns]-> Domain1_Computer3_NoOwnerRights_OwnerIsEA
+								require.Equal(t, harness.OwnsWriteOwner.Domain1_User103_EnterpriseAdmin.ID, startNode.ID)
+
+							case harness.OwnsWriteOwner.Domain1_MSA3_NoOwnerRights_OwnerIsEA.ID:
+								// Domain1_User103_EnterpriseAdmin -[Owns]-> Domain1_MSA3_NoOwnerRights_OwnerIsEA
+								require.Equal(t, harness.OwnsWriteOwner.Domain1_User103_EnterpriseAdmin.ID, startNode.ID)
+
+							case harness.OwnsWriteOwner.Domain1_GMSA3_NoOwnerRights_OwnerIsEA.ID:
+								// Domain1_User103_EnterpriseAdmin -[Owns]-> Domain1_GMSA3_NoOwnerRights_OwnerIsEA
+								require.Equal(t, harness.OwnsWriteOwner.Domain1_User103_EnterpriseAdmin.ID, startNode.ID)
+
+							case harness.OwnsWriteOwner.Domain1_User3_NoOwnerRights_OwnerIsEA.ID:
+								// Domain1_User103_EnterpriseAdmin -[Owns]-> Domain1_User3_NoOwnerRights_OwnerIsEA
+								require.Equal(t, harness.OwnsWriteOwner.Domain1_User103_EnterpriseAdmin.ID, startNode.ID)
+
+							case harness.OwnsWriteOwner.Domain2_Computer1_NoOwnerRights.ID:
+								// Domain2_User1_Owner -[Owns]-> Domain2_Computer1_NoOwnerRights
+								require.Equal(t, harness.OwnsWriteOwner.Domain2_User1_Owner.ID, startNode.ID)
+
+							default:
+								t.Fatalf("unexpected edge in integration test: %s -[Owns]-> %s", startNodeName, targetNodeName)
+							}
+						}
+					}
+				}
+
+				// WriteOwner: MATCH (a)-[r:WriteOwner]->(b) RETURN a, r, b;
+				if results, err := ops.FetchRelationships(tx.Relationships().Filterf(func() graph.Criteria {
+					return query.And(
+						query.Kind(query.Relationship(), ad.WriteOwner),
+						query.Kind(query.Start(), ad.Entity),
+					)
+				})); err != nil {
+					t.Fatalf("error fetching WriteOwner edges in integration test; %v", err)
+				} else {
+					require.Equal(t, 8, len(results))
+
+					for _, rel := range results {
+						if startNode, err := ops.FetchNode(tx, rel.StartID); err != nil {
+							t.Fatalf("error fetching start node in integration test; %v", err)
+						} else if targetNode, err := ops.FetchNode(tx, rel.EndID); err != nil {
+							t.Fatalf("error fetching target node in integration test; %v", err)
+						} else {
+							// Extract 'name' properties from startNode and targetNode
+							startNodeName, okStart := startNode.Properties.Map["name"].(string)
+							if !okStart {
+								startNodeName = "<unknown>"
+							}
+							targetNodeName, okTarget := targetNode.Properties.Map["name"].(string)
+							if !okTarget {
+								targetNodeName = "<unknown>"
+							}
+
+							switch targetNode.ID {
+							case harness.OwnsWriteOwner.Domain1_User1_NoOwnerRights_OwnerIsLowPriv.ID:
+								// Domain1_User104_WriteOwner -[WriteOwner]-> Domain1_User1_NoOwnerRights_OwnerIsLowPriv
+								require.Equal(t, harness.OwnsWriteOwner.Domain1_User104_WriteOwner.ID, startNode.ID)
+
+							case harness.OwnsWriteOwner.Domain1_User2_NoOwnerRights_OwnerIsDA.ID:
+								// Domain1_User104_WriteOwner -[WriteOwner]-> Domain1_User2_NoOwnerRights_OwnerIsDA
+								require.Equal(t, harness.OwnsWriteOwner.Domain1_User104_WriteOwner.ID, startNode.ID)
+
+							case harness.OwnsWriteOwner.Domain1_User3_NoOwnerRights_OwnerIsEA.ID:
+								// Domain1_User104_WriteOwner -[WriteOwner]-> Domain1_User3_NoOwnerRights_OwnerIsEA
+								require.Equal(t, harness.OwnsWriteOwner.Domain1_User104_WriteOwner.ID, startNode.ID)
+
+							case harness.OwnsWriteOwner.Domain1_User4_AbusableOwnerRightsNoneInherited.ID:
+								// Domain1_User104_WriteOwner -[WriteOwner]-> Domain1_User4_NoOwnerRights_OwnerIsEA
+								require.Equal(t, harness.OwnsWriteOwner.Domain1_User104_WriteOwner.ID, startNode.ID)
+
+							case harness.OwnsWriteOwner.Domain1_User7_OnlyNonabusableOwnerRightsAndNoneInherited.ID:
+								// Domain1_User104_WriteOwner -[WriteOwner]-> Domain1_User7_OnlyNonabusableOwnerRightsAndNoneInherited
+								require.Equal(t, harness.OwnsWriteOwner.Domain1_User104_WriteOwner.ID, startNode.ID)
+
+							case harness.OwnsWriteOwner.Domain2_Computer1_NoOwnerRights.ID:
+								// Domain2_User2_WriteOwner -[WriteOwner]-> Domain2_Computer1_NoOwnerRights
+								require.Equal(t, harness.OwnsWriteOwner.Domain2_User2_WriteOwner.ID, startNode.ID)
+
+							case harness.OwnsWriteOwner.Domain2_Computer2_AbusableOwnerRightsNoneInherited.ID:
+								// Domain2_User2_WriteOwner -[WriteOwner]-> Domain2_Computer2_AbusableOwnerRightsNoneInherited
+								require.Equal(t, harness.OwnsWriteOwner.Domain2_User2_WriteOwner.ID, startNode.ID)
+
+							case harness.OwnsWriteOwner.Domain2_Computer5_OnlyNonabusableOwnerRightsAndNoneInherited.ID:
+								// Domain2_User2_WriteOwner -[WriteOwner]-> Domain2_Computer5_OnlyNonabusableOwnerRightsAndNoneInherited
+								require.Equal(t, harness.OwnsWriteOwner.Domain2_User2_WriteOwner.ID, startNode.ID)
+
+							default:
+								t.Fatalf("unexpected edge in integration test: %s -[Owns]-> %s", startNodeName, targetNodeName)
+							}
+						}
+					}
+				}
+
+				return nil
+			})
+		}
+	})
+}
+
+func TestHasTrustKeys(t *testing.T) {
+	var (
+		testCtx = integration.NewGraphTestContext(t, schema.DefaultGraphSchema())
+		graphDB = testCtx.Graph.Database
+	)
+
+	fixture, err := arrows.LoadGraphFromFile(integration.Harnesses, "harnesses/HasTrustKeysHarness.json")
+	require.NoError(t, err)
+
+	// Split edges into test edges and the other edges
+	testEdges := []arrows.Edge{}
+	otherEdges := []arrows.Edge{}
+	for _, edge := range fixture.Relationships {
+		if edge.Type == ad.HasTrustKeys.String() {
+			testEdges = append(testEdges, edge)
+		} else {
+			otherEdges = append(otherEdges, edge)
+		}
+	}
+	fixture.Relationships = otherEdges
+
+	err = arrows.WriteGraphToDatabase(graphDB, &fixture)
+	require.NoError(t, err)
+
+	err = graphDB.ReadTransaction(testCtx.Context(), func(tx graph.Transaction) error {
+		if _, err := adAnalysis.PostHasTrustKeys(testCtx.Context(), graphDB); err != nil {
+			t.Fatalf("error creating HasTrustKeys edges in integration test; %v", err)
+		} else {
+			if err = graphDB.ReadTransaction(context.Background(), func(tx graph.Transaction) error {
+				if results, err := ops.FetchRelationshipIDs(tx.Relationships().Filterf(func() graph.Criteria {
+					return query.Kind(query.Relationship(), ad.HasTrustKeys)
+				})); err != nil {
+					t.Fatalf("error fetching HasTrustKeys edges in integration test; %v", err)
+				} else {
+					require.Equal(t, len(testEdges), len(results))
+				}
+
+				for _, testEdge := range testEdges {
+					if fromNode, found := findNodeByID(fixture.Nodes, testEdge.FromID); !found {
+						t.Fatalf("error finding source node with ID %s; %v", testEdge.FromID, err)
+					} else if toNode, found := findNodeByID(fixture.Nodes, testEdge.ToID); !found {
+						t.Fatalf("error finding destination node with ID %s; %v", testEdge.ToID, err)
+					} else if fromGraphNodeId, err := ops.FetchNodeIDs(tx.Nodes().Filterf(func() graph.Criteria {
+						return query.Equals(query.NodeProperty(common.Name.String()), fromNode.Caption)
+					})); err != nil || len(fromGraphNodeId) != 1 {
+						t.Fatalf("error fetching node with name %s in integration test; %v", fromNode.Caption, err)
+					} else if toGraphNodeId, err := ops.FetchNodeIDs(tx.Nodes().Filterf(func() graph.Criteria {
+						return query.Equals(query.NodeProperty(common.Name.String()), toNode.Caption)
+					})); err != nil || len(toGraphNodeId) != 1 {
+						t.Fatalf("error fetching node with name %s in integration test; %v", toNode.Caption, err)
+					} else if edge, err := analysis.FetchEdgeByStartAndEnd(testCtx.Context(), graphDB, fromGraphNodeId[0], toGraphNodeId[0], ad.HasTrustKeys); err != nil {
+						t.Fatalf("error fetching HasTrustKeys edge from node %s (ID: %d) to node %s (ID: %d) in integration test; %v", fromNode.Caption, fromGraphNodeId[0], toNode.Caption, toGraphNodeId[0], err)
+					} else {
+						require.NotNil(t, edge)
+					}
+				}
+
+				return nil
+			}); err != nil {
+				t.Fatalf("error in HasTrustKeys integration test; %v", err)
+			}
+		}
+		assert.NoError(t, err)
+		return nil
+	})
+}
+
+func findNodeByID(nodes []arrows.Node, id string) (*arrows.Node, bool) {
+	for i := range nodes {
+		if nodes[i].ID == id {
+			return &nodes[i], true
+		}
+	}
+	return nil, false
+}
+
+func TestProtectAdminGroups(t *testing.T) {
+	var (
+		testCtx = integration.NewGraphTestContext(t, schema.DefaultGraphSchema())
+		graphDB = testCtx.Graph.Database
+	)
+
+	fixture, err := arrows.LoadGraphFromFile(integration.Harnesses, "harnesses/ProtectAdminGroupsHarness.json")
+	require.NoError(t, err)
+
+	// Split edges into test edges and the other edges
+	testEdges := []arrows.Edge{}
+	otherEdges := []arrows.Edge{}
+	for _, edge := range fixture.Relationships {
+		if edge.Type == ad.ProtectAdminGroups.String() {
+			testEdges = append(testEdges, edge)
+		} else {
+			otherEdges = append(otherEdges, edge)
+		}
+	}
+	fixture.Relationships = otherEdges
+
+	err = arrows.WriteGraphToDatabase(graphDB, &fixture)
+	require.NoError(t, err)
+
+	err = graphDB.ReadTransaction(testCtx.Context(), func(tx graph.Transaction) error {
+		if _, err := adAnalysis.PostProtectAdminGroups(testCtx.Context(), graphDB); err != nil {
+			t.Fatalf("error creating ProtectAdminGroups edges in integration test; %v", err)
+		} else {
+			if err = graphDB.ReadTransaction(context.Background(), func(tx graph.Transaction) error {
+				if results, err := ops.FetchRelationshipIDs(tx.Relationships().Filterf(func() graph.Criteria {
+					return query.Kind(query.Relationship(), ad.ProtectAdminGroups)
+				})); err != nil {
+					t.Fatalf("error fetching ProtectAdminGroups edges in integration test; %v", err)
+				} else {
+					require.Equal(t, len(testEdges), len(results))
+				}
+
+				for _, testEdge := range testEdges {
+					if fromNode, found := findNodeByID(fixture.Nodes, testEdge.FromID); !found {
+						t.Fatalf("error finding source node with ID %s; %v", testEdge.FromID, err)
+					} else if toNode, found := findNodeByID(fixture.Nodes, testEdge.ToID); !found {
+						t.Fatalf("error finding destination node with ID %s; %v", testEdge.ToID, err)
+					} else if fromGraphNodeId, err := ops.FetchNodeIDs(tx.Nodes().Filterf(func() graph.Criteria {
+						return query.Equals(query.NodeProperty(common.Name.String()), fromNode.Caption)
+					})); err != nil || len(fromGraphNodeId) != 1 {
+						t.Fatalf("error fetching node with name %s in integration test; %v", fromNode.Caption, err)
+					} else if toGraphNodeId, err := ops.FetchNodeIDs(tx.Nodes().Filterf(func() graph.Criteria {
+						return query.Equals(query.NodeProperty(common.Name.String()), toNode.Caption)
+					})); err != nil || len(toGraphNodeId) != 1 {
+						t.Fatalf("error fetching node with name %s in integration test; %v", toNode.Caption, err)
+					} else if edge, err := analysis.FetchEdgeByStartAndEnd(testCtx.Context(), graphDB, fromGraphNodeId[0], toGraphNodeId[0], ad.ProtectAdminGroups); err != nil {
+						t.Fatalf("error fetching ProtectAdminGroups edge from node %s (ID: %d) to node %s (ID: %d) in integration test; %v", fromNode.Caption, fromGraphNodeId[0], toNode.Caption, toGraphNodeId[0], err)
+					} else {
+						require.NotNil(t, edge)
+					}
+				}
+
+				return nil
+			}); err != nil {
+				t.Fatalf("error in ProtectAdminGroups integration test; %v", err)
+			}
+		}
+		assert.NoError(t, err)
+		return nil
 	})
 }

@@ -14,12 +14,12 @@
 //
 // SPDX-License-Identifier: Apache-2.0
 
-import { FC } from 'react';
-import { groupSpecialFormat } from '../utils';
-import { EdgeInfoProps } from '../index';
 import { Typography } from '@mui/material';
+import { FC } from 'react';
+import { EdgeInfoProps } from '../index';
+import { groupSpecialFormat } from '../utils';
 
-const General: FC<EdgeInfoProps> = ({ sourceName, sourceType, targetName }) => {
+const General: FC<EdgeInfoProps> = ({ sourceName, sourceType }) => {
     return (
         <>
             <Typography variant='body2'>
@@ -33,9 +33,8 @@ const General: FC<EdgeInfoProps> = ({ sourceName, sourceType, targetName }) => {
                 The enterprise CA is configured with the EDITF_ATTRIBUTESUBJECTALTNAME2 flag allowing enrollees to
                 specify a Subject Alternate Name (SAN) identifying another principal during certificate enrollment of
                 any published certificate template. This setup allow an attacker principal to obtain a malicious
-                certificate as another principal. There is an affected Domain Controller configured to allow weak
-                certificate binding enforcement, which enables the attacker principal to authenticate with the malicious
-                certificate and thereby impersonating any AD forest user or computer without their credentials.
+                certificate as any AD forest user or computer and use it for authentication and impersonation without
+                knowing their credentials.
             </Typography>
         </>
     );

@@ -18,59 +18,29 @@ package migrations
 
 import (
 	"context"
+	"errors"
 	"fmt"
-	"github.com/specterops/bloodhound/dawgs/graph"
-	"github.com/specterops/bloodhound/dawgs/query"
-	"github.com/specterops/bloodhound/graphschema"
-	"github.com/specterops/bloodhound/graphschema/common"
-	"github.com/specterops/bloodhound/log"
-	"github.com/specterops/bloodhound/src/version"
+	"log/slog"
+	"sort"
+
+	"github.com/specterops/bloodhound/cmd/api/src/version"
+	"github.com/specterops/bloodhound/packages/go/graphschema"
+	"github.com/specterops/bloodhound/packages/go/graphschema/common"
+	"github.com/specterops/dawgs/graph"
+	"github.com/specterops/dawgs/query"
 )
 
 type Migration struct {
 	Version version.Version
-	Execute func(db graph.Database) error
+	Execute func(ctx context.Context, db graph.Database) error
 }
 
-type GraphMigrator struct {
-	db graph.Database
-}
+type MigrationsByVersion = map[version.Version][]Migration
 
-func NewGraphMigrator(db graph.Database) *GraphMigrator {
-	return &GraphMigrator{db: db}
-}
-
-func (s *GraphMigrator) Migrate(ctx context.Context, schema graph.Schema) error {
-	// Assert the schema first
-	if err := s.db.AssertSchema(ctx, schema); err != nil {
-		return err
-	}
-
-	// Perform stepwise migrations
-	if err := s.executeStepwiseMigrations(); err != nil {
-		return err
-	}
-
-	return nil
-}
-
-func (s *GraphMigrator) createMigrationData() error {
-	return s.db.WriteTransaction(context.Background(), func(tx graph.Transaction) error {
-		if _, err := tx.CreateNode(graph.AsProperties(map[string]any{
-			"Major": 0,
-			"Minor": 0,
-			"Patch": 0,
-		}), common.MigrationData); err != nil {
-			return fmt.Errorf("could not create migration data: %w", err)
-		}
-		return nil
-	})
-}
-
-func (s *GraphMigrator) updateMigrationData(target version.Version) error {
+func UpdateMigrationData(ctx context.Context, db graph.Database, target version.Version) error {
 	var node *graph.Node
 
-	if err := s.db.ReadTransaction(context.Background(), func(tx graph.Transaction) error {
+	if err := db.ReadTransaction(ctx, func(tx graph.Transaction) error {
 		var err error
 
 		if node, err = tx.Nodes().Filterf(func() graph.Criteria {
@@ -87,84 +57,160 @@ func (s *GraphMigrator) updateMigrationData(target version.Version) error {
 		node.Properties.Set("Minor", target.Minor)
 		node.Properties.Set("Patch", target.Patch)
 
-		return s.db.WriteTransaction(context.Background(), func(tx graph.Transaction) error {
+		return db.WriteTransaction(ctx, func(tx graph.Transaction) error {
 			if err := tx.UpdateNode(node); err != nil {
 				return fmt.Errorf("could not update migration data node: %w", err)
 			}
+
 			return nil
 		})
 	}
 }
 
-func (s *GraphMigrator) getMigrationData() (version.Version, error) {
+var ErrNoMigrationData = errors.New("no migration data")
+
+// GetMigrationData fetches the database migration version for the given graph. This function logs failures but does
+// not return the raw error condition to the caller, instead the sentinel ErrNoMigrationData is returned. This is done
+// to avoid situations where a version check prevents an otherwise uninitialized database from reaching schema
+// assertion.
+func GetMigrationData(ctx context.Context, db graph.Database) (version.Version, error) {
 	var (
 		node             *graph.Node
-		currentMigration version.Version
+		currentMigration = version.GetVersion()
 	)
 
-	if err := s.db.ReadTransaction(context.Background(), func(tx graph.Transaction) error {
+	if err := db.ReadTransaction(ctx, func(tx graph.Transaction) error {
 		var err error
 
-		if node, err = tx.Nodes().Filterf(func() graph.Criteria {
+		node, err = tx.Nodes().Filterf(func() graph.Criteria {
 			return query.Kind(query.Node(), common.MigrationData)
-		}).First(); err != nil {
-			return err
-		}
-		return nil
+		}).First()
+
+		return err
 	}); err != nil {
-		return currentMigration, err
-	} else if currentMigration.Major, err = node.Properties.Get("Major").Int(); err != nil {
-		return currentMigration, fmt.Errorf("unable to get Major property from node: %w", err)
-	} else if currentMigration.Minor, err = node.Properties.Get("Minor").Int(); err != nil {
-		return currentMigration, fmt.Errorf("unable to get Major property from node: %w", err)
-	} else if currentMigration.Patch, err = node.Properties.Get("Patch").Int(); err != nil {
-		return currentMigration, fmt.Errorf("unable to get Major property from node: %w", err)
+		slog.WarnContext(ctx, fmt.Sprintf("Unable to fetch migration data from graph: %v", err))
+		return currentMigration, ErrNoMigrationData
+	} else if major, err := node.Properties.Get("Major").Int(); err != nil {
+		slog.WarnContext(ctx, fmt.Sprintf("Unable to get Major property from migration data node: %v", err))
+		return currentMigration, ErrNoMigrationData
+	} else if minor, err := node.Properties.Get("Minor").Int(); err != nil {
+		slog.WarnContext(ctx, fmt.Sprintf("unable to get Minor property from migration data node: %v", err))
+		return currentMigration, ErrNoMigrationData
+	} else if patch, err := node.Properties.Get("Patch").Int(); err != nil {
+		slog.WarnContext(ctx, fmt.Sprintf("unable to get Patch property from migration data node: %v", err))
+		return currentMigration, ErrNoMigrationData
 	} else {
-		return currentMigration, nil
+		currentMigration.Major = major
+		currentMigration.Minor = minor
+		currentMigration.Patch = patch
 	}
+
+	return currentMigration, nil
 }
 
-func (s *GraphMigrator) executeMigrations(target version.Version) error {
-	mostRecentMigration := target
+type GraphMigration interface {
+	Migrate(ctx context.Context) error
+	GetMigrationsByVersion() MigrationsByVersion
+	ExecuteStepwiseMigrations(ctx context.Context, migrationsByVersion MigrationsByVersion) error
 
-	for _, migration := range Manifest {
-		if migration.Version.GreaterThan(mostRecentMigration) {
-			log.Infof("GraphDB Version %s is greater than %s", migration.Version, mostRecentMigration)
+	executeMigrations(ctx context.Context, originalVersion version.Version, migrationsByVersion MigrationsByVersion) error
+}
 
-			if err := migration.Execute(s.db); err != nil {
-				return fmt.Errorf("migration version %s failed: %w", migration.Version.String(), err)
-			}
+type GraphMigrator struct {
+	db graph.Database
+}
 
-			mostRecentMigration = migration.Version
-		}
+func NewGraphMigrator(db graph.Database) *GraphMigrator {
+	return &GraphMigrator{db: db}
+}
+
+func (s *GraphMigrator) Migrate(ctx context.Context) error {
+	// Assert the schema first
+	if err := s.db.AssertSchema(ctx, graphschema.DefaultGraphSchema()); err != nil {
+		return err
 	}
 
-	if mostRecentMigration.GreaterThan(target) {
-		return s.updateMigrationData(mostRecentMigration)
+	// Perform stepwise migrations
+	if err := s.ExecuteStepwiseMigrations(ctx, s.GetMigrationsByVersion()); err != nil {
+		return err
 	}
 
 	return nil
 }
 
-func (s *GraphMigrator) executeStepwiseMigrations() error {
-	if err := s.db.AssertSchema(context.Background(), graphschema.DefaultGraphSchema()); err != nil {
-		return fmt.Errorf("error asserting current schema: %w", err)
-	}
+func CreateMigrationData(ctx context.Context, db graph.Database, currentVersion version.Version) error {
+	return db.WriteTransaction(ctx, func(tx graph.Transaction) error {
+		if _, err := tx.CreateNode(graph.AsProperties(map[string]any{
+			"Major": currentVersion.Major,
+			"Minor": currentVersion.Minor,
+			"Patch": currentVersion.Patch,
+		}), common.MigrationData); err != nil {
+			return fmt.Errorf("could not create migration data: %w", err)
+		}
+		return nil
+	})
+}
 
-	if currentMigration, err := s.getMigrationData(); err != nil {
-		if graph.IsErrNotFound(err) {
-			if err := s.createMigrationData(); err != nil {
-				return fmt.Errorf("could not create graph db migration data: %w", err)
+func (s *GraphMigrator) executeMigrations(ctx context.Context, originalVersion version.Version, migrationsByVersion MigrationsByVersion) error {
+	var (
+		mostRecentVersion = originalVersion
+		orderedVersions   []version.Version
+	)
+
+	// Order the manifest versions to ensure ascending stepwise migrations
+	for v := range migrationsByVersion {
+		orderedVersions = append(orderedVersions, v)
+	}
+	sort.Slice(orderedVersions, func(i, j int) bool {
+		return orderedVersions[i].LessThan(orderedVersions[j])
+	})
+
+	for _, nextVersion := range orderedVersions {
+		if nextVersion.GreaterThan(mostRecentVersion) {
+			versionMigrations := migrationsByVersion[nextVersion]
+			for _, nextMigration := range versionMigrations {
+				slog.InfoContext(ctx, fmt.Sprintf("Graph migration version %s is greater than current version %s", nextMigration.Version, mostRecentVersion))
+
+				if err := nextMigration.Execute(ctx, s.db); err != nil {
+					return fmt.Errorf("migration version %s failed: %w", nextMigration.Version.String(), err)
+				}
 			}
 
+			slog.InfoContext(ctx, fmt.Sprintf("Graph migration version %s executed successfully", nextVersion))
+			mostRecentVersion = nextVersion
+		}
+	}
+
+	if releaseVersion := version.GetVersion(); releaseVersion.GreaterThan(mostRecentVersion) {
+		mostRecentVersion = releaseVersion
+	}
+
+	if mostRecentVersion.GreaterThan(originalVersion) {
+		return UpdateMigrationData(ctx, s.db, mostRecentVersion)
+	}
+
+	return nil
+}
+
+func (s *GraphMigrator) GetMigrationsByVersion() MigrationsByVersion {
+	migrationsByVersion := make(MigrationsByVersion)
+	for _, migration := range Manifest {
+		migrationsByVersion[migration.Version] = append(migrationsByVersion[migration.Version], migration)
+	}
+	return migrationsByVersion
+}
+
+func (s *GraphMigrator) ExecuteStepwiseMigrations(ctx context.Context, migrationsByVersion MigrationsByVersion) error {
+	if currentMigration, err := GetMigrationData(ctx, s.db); err != nil {
+		if errors.Is(err, ErrNoMigrationData) {
 			currentVersion := version.GetVersion()
 
-			log.Infof("This is a new graph database. Creating a migration entry for GraphDB version %s", currentVersion)
-			return s.updateMigrationData(currentVersion)
+			slog.InfoContext(ctx, fmt.Sprintf("This is a new graph database. Creating a migration entry for GraphDB version %s", currentVersion))
+			return CreateMigrationData(ctx, s.db, currentMigration)
 		} else {
 			return fmt.Errorf("unable to get graph db migration data: %w", err)
 		}
 	} else {
-		return s.executeMigrations(currentMigration)
+		return s.executeMigrations(ctx, currentMigration, migrationsByVersion)
 	}
 }

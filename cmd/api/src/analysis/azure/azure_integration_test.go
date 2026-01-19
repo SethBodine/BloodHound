@@ -20,20 +20,22 @@ package azure_test
 
 import (
 	"context"
-	schema "github.com/specterops/bloodhound/graphschema"
+	"slices"
 	"testing"
 
-	"github.com/specterops/bloodhound/graphschema/azure"
-	"github.com/specterops/bloodhound/graphschema/common"
+	schema "github.com/specterops/bloodhound/packages/go/graphschema"
+
+	"github.com/specterops/bloodhound/packages/go/graphschema/azure"
+	"github.com/specterops/bloodhound/packages/go/graphschema/common"
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 
-	azureanalysis "github.com/specterops/bloodhound/analysis/azure"
-	"github.com/specterops/bloodhound/dawgs/graph"
-	"github.com/specterops/bloodhound/dawgs/ops"
-	"github.com/specterops/bloodhound/dawgs/query"
-	"github.com/specterops/bloodhound/src/test/integration"
+	"github.com/specterops/bloodhound/cmd/api/src/test/integration"
+	azureanalysis "github.com/specterops/bloodhound/packages/go/analysis/azure"
+	"github.com/specterops/dawgs/graph"
+	"github.com/specterops/dawgs/ops"
+	"github.com/specterops/dawgs/query"
 )
 
 func TestFetchEntityByObjectID(t *testing.T) {
@@ -648,6 +650,33 @@ func TestRoleEntityDetails(t *testing.T) {
 	})
 }
 
+func TestRoleAddSecret(t *testing.T) {
+	testContext := integration.NewGraphTestContext(t, schema.DefaultGraphSchema())
+	testContext.ReadTransactionTestWithSetup(func(harness *integration.HarnessDetails) error {
+		harness.AZAddSecretHarness.Setup(testContext)
+		return nil
+	}, func(harness integration.HarnessDetails, tx graph.Transaction) {
+
+		postProcessingStats, err := azureanalysis.AppRoleAssignments(context.Background(), testContext.Graph.Database)
+		assert.Nil(t, err)
+		assert.NotNil(t, postProcessingStats.RelationshipsCreated[azure.AddSecret])
+		assert.Equal(t, 4, int(*postProcessingStats.RelationshipsCreated[azure.AddSecret]))
+
+		// Validate that the AZAddSecret edges were created
+		addSecretEdges, err := ops.FetchRelationships(tx.Relationships().Filterf(func() graph.Criteria {
+			return query.Kind(query.Relationship(), azure.AddSecret)
+		}))
+		assert.Nil(t, err)
+		assert.Len(t, addSecretEdges, 4)
+
+		for _, edge := range addSecretEdges {
+			assert.Equal(t, azure.AddSecret, edge.Kind)
+			assert.True(t, slices.Contains([]graph.ID{harness.AZAddSecretHarness.AppAdminRole.ID, harness.AZAddSecretHarness.CloudAppAdminRole.ID}, edge.StartID))
+			assert.True(t, slices.Contains([]graph.ID{harness.AZAddSecretHarness.AZApp.ID, harness.AZAddSecretHarness.AZServicePrincipal.ID}, edge.EndID))
+		}
+	})
+}
+
 func TestServicePrincipalEntityDetails(t *testing.T) {
 	testContext := integration.NewGraphTestContext(t, schema.DefaultGraphSchema())
 	testContext.ReadTransactionTestWithSetup(func(harness *integration.HarnessDetails) error {
@@ -663,6 +692,7 @@ func TestServicePrincipalEntityDetails(t *testing.T) {
 
 		require.Nil(t, err)
 		assert.Equal(t, harness.AZEntityPanelHarness.ServicePrincipal.Properties.Get(common.ObjectID.String()).Any(), servicePrincipal.Properties[common.ObjectID.String()])
+		assert.Equal(t, harness.AZEntityPanelHarness.Application.Properties.Get(common.ObjectID.String()).Any(), servicePrincipal.Properties[azure.AppID.String()])
 		assert.Equal(t, 0, servicePrincipal.InboundObjectControl)
 
 		servicePrincipal, err = azureanalysis.ServicePrincipalEntityDetails(context.Background(), testContext.Graph.Database, servicePrincipalObjectID, true)

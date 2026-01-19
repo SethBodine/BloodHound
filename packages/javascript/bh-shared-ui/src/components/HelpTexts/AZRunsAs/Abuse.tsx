@@ -14,16 +14,46 @@
 //
 // SPDX-License-Identifier: Apache-2.0
 
-import { FC } from 'react';
 import { Typography } from '@mui/material';
+import { FC } from 'react';
 
 const Abuse: FC = () => {
     return (
-        <Typography variant='body2'>
-            This edge should be taken into consideration when abusing control of an app. Apps authenticate with service
-            principals to the tenant, so if you have control of an app, what you are abusing is that control plus the
-            fact that the app runs as a privileged service principal
-        </Typography>
+        <>
+            <Typography variant='body2'>
+                This edge should be taken into consideration when abusing control of an app. Apps authenticate with
+                service principals to the tenant, so if you have control of an app, what you are abusing is that control
+                plus the fact that the app runs as a privileged service principal
+            </Typography>
+
+            <Typography variant={'body2'}>
+                <ol className='list-inside list-decimal flex flex-col gap-2'>
+                    <li>
+                        Use the{' '}
+                        <a
+                            target='_blank'
+                            rel='noopener noreferrer'
+                            href={
+                                'https://learn.microsoft.com/en-us/graph/api/serviceprincipal-addpassword?view=graph-rest-1.0&tabs=http'
+                            }>
+                            Microsoft Graph API
+                        </a>{' '}
+                        to add a new client secret to the Azure Application.
+                    </li>
+                    <li>
+                        Use the{' '}
+                        <a
+                            target='_blank'
+                            rel='noopener noreferrer'
+                            href={'https://learn.microsoft.com/en-us/cli/azure/'}>
+                            Azure CLI
+                        </a>{' '}
+                        to authenticate as the Service Principal.
+                    </li>
+                    <li>Proceed to access additional Azure resources under the control of the Service Principal.</li>
+                </ol>
+            </Typography>
+        </>
     );
 };
 

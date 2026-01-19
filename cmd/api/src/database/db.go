@@ -20,26 +20,45 @@ package database
 
 import (
 	"context"
+	"database/sql"
+	"errors"
 	"fmt"
-	"github.com/specterops/bloodhound/src/services/agi"
-	"github.com/specterops/bloodhound/src/services/dataquality"
-	"github.com/specterops/bloodhound/src/services/fileupload"
-	"github.com/specterops/bloodhound/src/services/ingest"
+	"log/slog"
 	"time"
 
 	"github.com/gofrs/uuid"
-	"github.com/specterops/bloodhound/errors"
-	"github.com/specterops/bloodhound/log"
-	"github.com/specterops/bloodhound/src/auth"
-	"github.com/specterops/bloodhound/src/database/migration"
-	"github.com/specterops/bloodhound/src/model"
-	"github.com/specterops/bloodhound/src/model/appcfg"
+	"github.com/specterops/bloodhound/cmd/api/src/auth"
+	"github.com/specterops/bloodhound/cmd/api/src/database/migration"
+	"github.com/specterops/bloodhound/cmd/api/src/model"
+	"github.com/specterops/bloodhound/cmd/api/src/model/appcfg"
+	"github.com/specterops/bloodhound/cmd/api/src/services/agi"
+	"github.com/specterops/bloodhound/cmd/api/src/services/dataquality"
+	"github.com/specterops/bloodhound/cmd/api/src/services/upload"
 	"gorm.io/driver/postgres"
 	"gorm.io/gorm"
 )
 
-const (
-	ErrNotFound = errors.Error("entity not found")
+var (
+	ErrNotFound = errors.New("entity not found")
+)
+
+var (
+	ErrDuplicateAGName                           = errors.New("duplicate asset group name")
+	ErrDuplicateAGTag                            = errors.New("duplicate asset group tag")
+	ErrDuplicateAGTagSelectorName                = errors.New("duplicate asset group tag selector name")
+	ErrDuplicateSSOProviderName                  = errors.New("duplicate sso provider name")
+	ErrDuplicateUserPrincipal                    = errors.New("duplicate user principal name")
+	ErrDuplicateEmail                            = errors.New("duplicate user email address")
+	ErrDuplicateCustomNodeKindName               = errors.New("duplicate custom node kind name")
+	ErrDuplicateKindName                         = errors.New("duplicate kind name")
+	ErrDuplicateGlyph                            = errors.New("duplicate glyph")
+	ErrPositionOutOfRange                        = errors.New("position out of range")
+	ErrDuplicateGraphSchemaExtensionName         = errors.New("duplicate graph schema extension name")
+	ErrDuplicateSchemaNodeKindName               = errors.New("duplicate schema node kind name")
+	ErrDuplicateGraphSchemaExtensionPropertyName = errors.New("duplicate graph schema extension property name")
+	ErrDuplicateSchemaEdgeKindName               = errors.New("duplicate schema edge kind name")
+	ErrDuplicateSchemaEnvironment                = errors.New("duplicate schema environment")
+	ErrDuplicateSchemaRelationshipFindingName    = errors.New("duplicate schema relationship finding name")
 )
 
 func IsUnexpectedDatabaseError(err error) bool {
@@ -58,8 +77,9 @@ type Database interface {
 	Close(ctx context.Context)
 
 	// Ingest
-	ingest.IngestData
+	upload.UploadData
 	GetAllIngestTasks(ctx context.Context) (model.IngestTasks, error)
+	CountAllIngestTasks(ctx context.Context) (int64, error)
 	DeleteIngestTask(ctx context.Context, ingestTask model.IngestTask) error
 	GetIngestTasksForJob(ctx context.Context, jobID int64) (model.IngestTasks, error)
 
@@ -75,10 +95,10 @@ type Database interface {
 	GetAssetGroupSelector(ctx context.Context, id int32) (model.AssetGroupSelector, error)
 	DeleteAssetGroupSelector(ctx context.Context, selector model.AssetGroupSelector) error
 	UpdateAssetGroupSelectors(ctx context.Context, assetGroup model.AssetGroup, selectorSpecs []model.AssetGroupSelectorSpec, systemSelector bool) (model.UpdatedAssetGroupSelectors, error)
+	DeleteAssetGroupSelectorsForAssetGroups(ctx context.Context, assetGroupIds []int) error
 
 	Wipe(ctx context.Context) error
 	Migrate(ctx context.Context) error
-	RequiresMigration(ctx context.Context) (bool, error)
 	CreateInstallation(ctx context.Context) (model.Installation, error)
 	GetInstallation(ctx context.Context) (model.Installation, error)
 	HasInstallation(ctx context.Context) (bool, error)
@@ -118,17 +138,14 @@ type Database interface {
 	DeleteAuthSecret(ctx context.Context, authSecret model.AuthSecret) error
 	InitializeSecretAuth(ctx context.Context, adminUser model.User, authSecret model.AuthSecret) (model.Installation, error)
 
-	// SAML
-	CreateSAMLIdentityProvider(ctx context.Context, samlProvider model.SAMLProvider) (model.SAMLProvider, error)
-	UpdateSAMLIdentityProvider(ctx context.Context, samlProvider model.SAMLProvider) error
-	LookupSAMLProviderByName(ctx context.Context, name string) (model.SAMLProvider, error)
-	GetAllSAMLProviders(ctx context.Context) (model.SAMLProviders, error)
-	GetSAMLProvider(ctx context.Context, id int32) (model.SAMLProvider, error)
-	GetSAMLProviderUsers(ctx context.Context, id int32) (model.Users, error)
-	DeleteSAMLProvider(ctx context.Context, samlProvider model.SAMLProvider) error
+	// SSO
+	SSOProviderData
+	OIDCProviderData
+	SAMLProviderData
 
 	// Sessions
 	CreateUserSession(ctx context.Context, userSession model.UserSession) (model.UserSession, error)
+	SetUserSessionFlag(ctx context.Context, userSession *model.UserSession, key model.SessionFlagKey, state bool) error
 	LookupActiveSessionsByUser(ctx context.Context, user model.User) ([]model.UserSession, error)
 	EndUserSession(ctx context.Context, userSession model.UserSession)
 	GetUserSession(ctx context.Context, id int64) (model.UserSession, error)
@@ -137,20 +154,44 @@ type Database interface {
 	// Data Quality
 	dataquality.DataQualityData
 	GetADDataQualityStats(ctx context.Context, domainSid string, start time.Time, end time.Time, sort_by string, limit int, skip int) (model.ADDataQualityStats, int, error)
+	GetAggregateADDataQualityStats(ctx context.Context, domainSIDs []string, start time.Time, end time.Time) (model.ADDataQualityStats, error)
 	GetADDataQualityAggregations(ctx context.Context, start time.Time, end time.Time, sort_by string, limit int, skip int) (model.ADDataQualityAggregations, int, error)
 	GetAzureDataQualityStats(ctx context.Context, tenantId string, start time.Time, end time.Time, sort_by string, limit int, skip int) (model.AzureDataQualityStats, int, error)
 	GetAzureDataQualityAggregations(ctx context.Context, start time.Time, end time.Time, sort_by string, limit int, skip int) (model.AzureDataQualityAggregations, int, error)
 	DeleteAllDataQuality(ctx context.Context) error
 
-	// File Upload
-	fileupload.FileUploadData
-
 	// Saved Queries
-	ListSavedQueries(ctx context.Context, userID uuid.UUID, order string, filter model.SQLFilter, skip, limit int) (model.SavedQueries, int, error)
-	CreateSavedQuery(ctx context.Context, userID uuid.UUID, name string, query string) (model.SavedQuery, error)
-	DeleteSavedQuery(ctx context.Context, id int) error
-	SavedQueryBelongsToUser(ctx context.Context, userID uuid.UUID, savedQueryID int) (bool, error)
-	DeleteAssetGroupSelectorsForAssetGroups(ctx context.Context, assetGroupIds []int) error
+	SavedQueriesData
+
+	// Saved Queries Permissions
+	SavedQueriesPermissionsData
+
+	// Analysis Request
+	AnalysisRequestData
+
+	// Datapipe Status
+	DatapipeStatusData
+
+	// Asset Group Tags
+	AssetGroupHistoryData
+	AssetGroupTagData
+	AssetGroupTagSelectorData
+	AssetGroupTagSelectorNodeData
+
+	// Custom Node Kinds
+	CustomNodeKindData
+
+	// Source Kinds
+	SourceKindsData
+
+	// Environment Targeted Access Control
+	EnvironmentTargetedAccessControlData
+
+	// OpenGraph Schema
+	OpenGraphSchema
+
+	// Kind
+	Kind
 }
 
 type BloodhoundDB struct {
@@ -160,9 +201,9 @@ type BloodhoundDB struct {
 
 func (s *BloodhoundDB) Close(ctx context.Context) {
 	if sqlDBRef, err := s.db.WithContext(ctx).DB(); err != nil {
-		log.Errorf("Failed to fetch SQL DB reference from GORM: %v", err)
+		slog.ErrorContext(ctx, fmt.Sprintf("Failed to fetch SQL DB reference from GORM: %v", err))
 	} else if err := sqlDBRef.Close(); err != nil {
-		log.Errorf("Failed closing database: %v", err)
+		slog.ErrorContext(ctx, fmt.Sprintf("Failed closing database: %v", err))
 	}
 }
 
@@ -188,6 +229,18 @@ func NewBloodhoundDB(db *gorm.DB, idResolver auth.IdentityResolver) *BloodhoundD
 	return &BloodhoundDB{db: db, idResolver: idResolver}
 }
 
+// Transaction executes the given function within a database transaction.
+// The function receives a new BloodhoundDB instance backed by the transaction,
+// allowing all existing methods to participate in the transaction.
+// If the function returns an error, the transaction is rolled back.
+// If the function returns nil, the transaction is committed.
+// Optional sql.TxOptions can be provided to configure isolation level and read-only mode.
+func (s *BloodhoundDB) Transaction(ctx context.Context, fn func(tx *BloodhoundDB) error, opts ...*sql.TxOptions) error {
+	return s.db.WithContext(ctx).Transaction(func(tx *gorm.DB) error {
+		return fn(NewBloodhoundDB(tx, s.idResolver))
+	}, opts...)
+}
+
 func OpenDatabase(connection string) (*gorm.DB, error) {
 	gormConfig := &gorm.Config{
 		Logger: &GormLogAdapter{
@@ -211,12 +264,12 @@ func (s *BloodhoundDB) Wipe(ctx context.Context) error {
 	return s.db.WithContext(ctx).Transaction(func(tx *gorm.DB) error {
 		var tables []string
 
-		if result := tx.Raw("select table_name from information_schema.tables where table_schema = current_schema() and not table_name ilike '%pg_stat%'").Scan(&tables); result.Error != nil {
+		if result := tx.Raw("SELECT table_name FROM information_schema.tables WHERE table_schema = CURRENT_SCHEMA() AND NOT table_name ILIKE '%pg_stat%'").Scan(&tables); result.Error != nil {
 			return result.Error
 		}
 
 		for _, table := range tables {
-			stmt := fmt.Sprintf(`drop table if exists "%s" cascade`, table)
+			stmt := fmt.Sprintf(`DROP TABLE IF EXISTS "%s" CASCADE`, table)
 
 			if err := tx.Exec(stmt).Error; err != nil {
 				return err
@@ -227,14 +280,10 @@ func (s *BloodhoundDB) Wipe(ctx context.Context) error {
 	})
 }
 
-func (s *BloodhoundDB) RequiresMigration(ctx context.Context) (bool, error) {
-	return migration.NewMigrator(s.db.WithContext(ctx)).RequiresMigration()
-}
-
 func (s *BloodhoundDB) Migrate(ctx context.Context) error {
 	// Run the migrator
-	if err := migration.NewMigrator(s.db.WithContext(ctx)).Migrate(); err != nil {
-		log.Errorf("Error during SQL database migration phase: %v", err)
+	if err := migration.NewMigrator(s.db.WithContext(ctx)).ExecuteStepwiseMigrations(); err != nil {
+		slog.ErrorContext(ctx, fmt.Sprintf("Error during SQL database migration phase: %v", err))
 		return err
 	}
 

@@ -19,56 +19,77 @@ import {
     Dialog,
     DialogActions,
     DialogContent,
-    DialogContentText,
+    DialogDescription,
+    DialogPortal,
     DialogTitle,
-    FormHelperText,
-} from '@mui/material';
-import React from 'react';
+    Input,
+} from '@bloodhoundenterprise/doodleui';
+import React, { useCallback, useState } from 'react';
 
 const ConfirmationDialog: React.FC<{
     open: boolean;
     title: string;
-    text: string;
-    onClose: (response: boolean) => void;
+    text: string | JSX.Element;
+    onCancel: () => void;
+    onConfirm: () => void;
+    challengeTxt?: string;
     isLoading?: boolean;
     error?: string;
-}> = ({ open, title, text, onClose, isLoading, error }) => {
+}> = ({ open, title, text, onCancel, isLoading, error, challengeTxt = '', onConfirm }) => {
+    const [challengeTxtReply, setChallengeTxtReply] = useState<string>('');
+
+    const handleClose = useCallback(() => {
+        onCancel();
+        setTimeout(() => {
+            setChallengeTxtReply('');
+        }, 1000);
+    }, [onCancel]);
+
+    const handleConfirm = useCallback(() => {
+        onConfirm();
+        setTimeout(() => {
+            setChallengeTxtReply('');
+        }, 1000);
+    }, [onConfirm]);
+
     return (
-        <Dialog
-            open={open}
-            fullWidth={true}
-            maxWidth={'sm'}
-            onClose={() => onClose(false)}
-            PaperProps={{
-                // @ts-ignore
-                'data-testid': 'confirmation-dialog',
-            }}>
-            <DialogTitle>{title}</DialogTitle>
-            <DialogContent>
-                <DialogContentText>{text}</DialogContentText>
-            </DialogContent>
-            <DialogActions>
-                {error && (
-                    <FormHelperText error style={{ margin: 0 }}>
-                        {error}
-                    </FormHelperText>
-                )}
-                <Button
-                    autoFocus
-                    color='inherit'
-                    onClick={() => onClose(false)}
-                    disabled={isLoading}
-                    data-testid='confirmation-dialog_button-no'>
-                    {'No'}
-                </Button>
-                <Button
-                    color='primary'
-                    onClick={() => onClose(true)}
-                    disabled={isLoading}
-                    data-testid='confirmation-dialog_button-yes'>
-                    {'Yes'}
-                </Button>
-            </DialogActions>
+        <Dialog open={open} data-testid='confirmation-dialog'>
+            <DialogPortal>
+                <DialogContent>
+                    <DialogTitle className='text-lg'>{title}</DialogTitle>
+                    <DialogDescription className='text-lg'>{text}</DialogDescription>
+                    {challengeTxt && (
+                        <DialogDescription asChild className='text-sm'>
+                            <div>
+                                Please input "{challengeTxt}" prior to clicking confirm.
+                                <Input
+                                    placeholder={challengeTxt}
+                                    className='border-t-0 border-l-0 border-r-0 rounded-none border-black dark:border-white bg-transparent dark:bg-transparent placeholder-neutral-dark-10 dark:placeholder-neutral-light-10 focus-visible:ring-0 focus-visible:ring-offset-0 pl-2'
+                                    onChange={(e) => setChallengeTxtReply(e.target.value)}
+                                    value={challengeTxtReply}
+                                    data-testid='confirmation-dialog_challenge-text'
+                                />
+                            </div>
+                        </DialogDescription>
+                    )}
+                    <DialogActions>
+                        {error && <p className='content-center text-error text-xs mt-[3px]'>{error}</p>}
+                        <Button
+                            variant='tertiary'
+                            onClick={handleClose}
+                            disabled={isLoading}
+                            data-testid='confirmation-dialog_button-no'>
+                            Cancel
+                        </Button>
+                        <Button
+                            onClick={handleConfirm}
+                            disabled={isLoading || challengeTxt.toLowerCase() !== challengeTxtReply.toLowerCase()}
+                            data-testid='confirmation-dialog_button-yes'>
+                            Confirm
+                        </Button>
+                    </DialogActions>
+                </DialogContent>
+            </DialogPortal>
         </Dialog>
     );
 };

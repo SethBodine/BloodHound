@@ -17,8 +17,11 @@
 package middleware
 
 import (
+	"compress/gzip"
 	"context"
+	"errors"
 	"fmt"
+	"log/slog"
 	"net"
 	"net/http"
 	"net/url"
@@ -29,20 +32,15 @@ import (
 	"github.com/gofrs/uuid"
 	"github.com/gorilla/handlers"
 	"github.com/gorilla/mux"
-	"github.com/specterops/bloodhound/headers"
-	"github.com/specterops/bloodhound/log"
-	"github.com/specterops/bloodhound/src/api"
-	"github.com/specterops/bloodhound/src/config"
-	"github.com/specterops/bloodhound/src/ctx"
-	"github.com/specterops/bloodhound/src/database"
-	"github.com/specterops/bloodhound/src/model"
-	"github.com/specterops/bloodhound/src/utils"
 	"github.com/unrolled/secure"
-)
 
-const (
-	// Default timeout for any request is thirty seconds
-	defaultTimeout = 30 * time.Second
+	"github.com/specterops/bloodhound/cmd/api/src/api"
+	"github.com/specterops/bloodhound/cmd/api/src/config"
+	"github.com/specterops/bloodhound/cmd/api/src/ctx"
+	"github.com/specterops/bloodhound/cmd/api/src/database"
+	"github.com/specterops/bloodhound/cmd/api/src/model"
+	"github.com/specterops/bloodhound/cmd/api/src/utils"
+	"github.com/specterops/bloodhound/packages/go/headers"
 )
 
 // Wrapper is an iterator for middleware function application that wraps around a http.Handler.
@@ -85,7 +83,7 @@ func getScheme(request *http.Request) string {
 	}
 }
 
-func requestWaitDuration(request *http.Request) (time.Duration, error) {
+func RequestWaitDuration(request *http.Request) (time.Duration, error) {
 	var (
 		requestedWaitDuration time.Duration
 		err                   error
@@ -108,13 +106,13 @@ func ContextMiddleware(next http.Handler) http.Handler {
 		)
 
 		if newUUID, err := uuid.NewV4(); err != nil {
-			log.Errorf("Failed generating a new request UUID: %v", err)
+			slog.ErrorContext(request.Context(), fmt.Sprintf("Failed generating a new request UUID: %v", err))
 			requestID = "ERROR"
 		} else {
 			requestID = newUUID.String()
 		}
 
-		if requestedWaitDuration, err := requestWaitDuration(request); err != nil {
+		if requestedWaitDuration, err := RequestWaitDuration(request); err != nil {
 			// If there is a failure or other expectation mismatch with the client, respond right away with the relevant
 			// error information
 			api.WriteErrorResponse(request.Context(), api.BuildErrorResponse(http.StatusBadRequest, fmt.Sprintf("Prefer header has an invalid value: %v", err), request), response)
@@ -147,6 +145,7 @@ func ContextMiddleware(next http.Handler) http.Handler {
 				},
 				RequestedURL: model.AuditableURL(request.URL.String()),
 				RequestIP:    parseUserIP(request),
+				RemoteAddr:   request.RemoteAddr,
 			})
 
 			// Route the request with the embedded context
@@ -160,14 +159,14 @@ func parseUserIP(r *http.Request) string {
 
 	// The point of this code is to strip the port, so we don't need to save it.
 	if host, _, err := net.SplitHostPort(r.RemoteAddr); err != nil {
-		log.Warnf("Error parsing remoteAddress '%s': %s", r.RemoteAddr, err)
+		slog.WarnContext(r.Context(), fmt.Sprintf("Error parsing remoteAddress '%s': %s", r.RemoteAddr, err))
 		remoteIp = r.RemoteAddr
 	} else {
 		remoteIp = host
 	}
 
 	if result := r.Header.Get("X-Forwarded-For"); result == "" {
-		log.Debugf("No data found in X-Forwarded-For header")
+		slog.DebugContext(r.Context(), "No data found in X-Forwarded-For header")
 		return remoteIp
 	} else {
 		result += "," + remoteIp
@@ -207,7 +206,7 @@ func parsePreferHeaderWait(value string) (time.Duration, error) {
 			return time.Second * time.Duration(parsedNumSeconds), nil
 		}
 	} else {
-		return 0, nil
+		return 0, errors.New("leave field empty or specify with : 'wait=x'")
 	}
 }
 
@@ -249,7 +248,7 @@ func SecureHandlerMiddleware(cfg config.Configuration, contentSecurityPolicy str
 		STSPreload:           true,
 		STSIncludeSubdomains: true,
 
-		//Referrer-Policy
+		// Referrer-Policy
 		ReferrerPolicy: referrerPolicy,
 
 		// Permissions Policy
@@ -277,6 +276,28 @@ func FeatureFlagMiddleware(db database.Database, flagKey string) mux.MiddlewareF
 				next.ServeHTTP(response, request)
 			} else {
 				api.WriteErrorResponse(request.Context(), api.BuildErrorResponse(http.StatusNotFound, api.ErrorResponseDetailsResourceNotFound, request), response)
+			}
+		})
+	}
+}
+
+func EnsureRequestBodyClosed() mux.MiddlewareFunc {
+	return func(next http.Handler) http.Handler {
+		return http.HandlerFunc(func(response http.ResponseWriter, request *http.Request) {
+			next.ServeHTTP(response, request)
+
+			// This type cast is required because of the way that Go interfaces work. It is possible to have an
+			// interface pointed at a pointer that points at nil. This would result in the interface not being nil
+			// but still cause a panic while acting on the interface. https://go.dev/doc/faq#nil_error
+			switch b := request.Body.(type) {
+			case *gzip.Reader:
+				if b != nil {
+					b.Close()
+				}
+			default:
+				if b != nil {
+					b.Close()
+				}
 			}
 		})
 	}

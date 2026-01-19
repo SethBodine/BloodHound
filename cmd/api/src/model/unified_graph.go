@@ -17,14 +17,21 @@
 package model
 
 import (
-	"strings"
 	"time"
 
-	"github.com/specterops/bloodhound/analysis"
-	"github.com/specterops/bloodhound/dawgs/graph"
-	"github.com/specterops/bloodhound/graphschema/ad"
-	"github.com/specterops/bloodhound/graphschema/common"
+	"github.com/specterops/bloodhound/packages/go/analysis"
+	"github.com/specterops/bloodhound/packages/go/analysis/tiering"
+	"github.com/specterops/bloodhound/packages/go/graphschema/common"
+	"github.com/specterops/dawgs/graph"
 )
+
+// UnifiedGraphWPropertyKeys
+type UnifiedGraphWPropertyKeys struct {
+	NodeKeys []string               `json:"node_keys,omitempty"`
+	EdgeKeys []string               `json:"edge_keys,omitempty"`
+	Edges    []UnifiedEdge          `json:"edges"`
+	Nodes    map[string]UnifiedNode `json:"nodes"`
+}
 
 // UnifiedGraph represents a single, generic and minimalistic graph
 type UnifiedGraph struct {
@@ -42,12 +49,15 @@ func NewUnifiedGraph() UnifiedGraph {
 
 // UnifiedNode represents a single node in a graph containing a minimal set of attributes for graph rendering
 type UnifiedNode struct {
-	Label      string         `json:"label"`
-	Kind       string         `json:"kind"`
-	ObjectId   string         `json:"objectId"`
-	IsTierZero bool           `json:"isTierZero"`
-	LastSeen   time.Time      `json:"lastSeen"`
-	Properties map[string]any `json:"properties,omitempty"`
+	Label         string         `json:"label"`
+	Kind          string         `json:"kind"`
+	Kinds         []string       `json:"kinds"`
+	ObjectId      string         `json:"objectId"`
+	IsTierZero    bool           `json:"isTierZero"`
+	IsOwnedObject bool           `json:"isOwnedObject"`
+	LastSeen      time.Time      `json:"lastSeen"`
+	Properties    map[string]any `json:"properties,omitempty"`
+	Hidden        bool           `json:"hidden,omitempty"`
 }
 
 // UnifiedEdge represents a single path segment in a graph containing a minimal set of attributes for graph rendering
@@ -62,24 +72,33 @@ type UnifiedEdge struct {
 
 func FromDAWGSNode(node *graph.Node, includeProperties bool) UnifiedNode {
 	var (
-		objectId   = getTypedPropertyOrDefault(node.Properties, common.ObjectID.String(), "")
-		label      = getTypedPropertyOrDefault(node.Properties, common.Name.String(), objectId)
-		systemTags = getTypedPropertyOrDefault(node.Properties, common.SystemTags.String(), "")
-		lastSeen   = getTypedPropertyOrDefault(node.Properties, common.LastSeen.String(), time.Now())
-		properties map[string]any
+		props       = node.Properties
+		objectId    = getTypedPropertyOrDefault(props, common.ObjectID.String(), "")
+		label       = getTypedPropertyOrDefault(props, common.Name.String(), objectId)
+		lastSeen    = getTypedPropertyOrDefault(props, common.LastSeen.String(), time.Now())
+		primaryKind = getTypedPropertyOrDefault(props, common.PrimaryKind.String(), "")
 	)
 
+	// only generic-ingested nodes have the PrimaryKind property set to control what icon the UI displays.
+	kind := primaryKind
+	if kind == "" {
+		kind = analysis.GetNodeKind(node).String()
+	}
+
+	var properties map[string]any
 	if includeProperties {
-		properties = node.Properties.Map
+		properties = props.Map
 	}
 
 	return UnifiedNode{
-		Label:      label,
-		Kind:       analysis.GetNodeKind(node).String(),
-		ObjectId:   objectId,
-		IsTierZero: strings.Contains(systemTags, ad.AdminTierZero),
-		LastSeen:   lastSeen,
-		Properties: properties,
+		Label:         label,
+		Kind:          kind,
+		Kinds:         node.Kinds.Strings(),
+		ObjectId:      objectId,
+		IsTierZero:    tiering.IsTierZero(node),
+		IsOwnedObject: tiering.IsOwned(node),
+		LastSeen:      lastSeen,
+		Properties:    properties,
 	}
 }
 

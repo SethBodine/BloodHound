@@ -18,7 +18,7 @@ import { Link, Typography } from '@mui/material';
 import { FC } from 'react';
 import { EdgeInfoProps } from '../index';
 
-const LinuxAbuse: FC<EdgeInfoProps> = ({ sourceName, sourceType }) => {
+const LinuxAbuse: FC<EdgeInfoProps> = () => {
     return (
         <>
             <Typography variant='body2'>
@@ -35,7 +35,7 @@ const LinuxAbuse: FC<EdgeInfoProps> = ({ sourceName, sourceType }) => {
 
             <Typography variant='body2'>
                 It can also be done with pass-the-hash using{' '}
-                <Link target='_blank' rel='noopener' href='https://github.com/byt3bl33d3r/pth-toolkit'>
+                <Link target='_blank' rel='noopener noreferrer' href='https://github.com/byt3bl33d3r/pth-toolkit'>
                     pth-toolkit's net tool
                 </Link>
                 . If the LM hash is not known, use 'ffffffffffffffffffffffffffffffff'.

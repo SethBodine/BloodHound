@@ -16,7 +16,10 @@
 
 package azure
 
-import "pkg.specterops.io/schemas/bh/types:types"
+import (
+	"list"
+	"pkg.specterops.io/schemas/bh/types:types"
+)
 
 // Exported requirements
 Properties: [...types.#StringEnum]
@@ -27,6 +30,8 @@ AbusableAppRoleRelationshipKinds: [... types.#Kind]
 ControlRelationshipKinds: [...types.#Kind]
 ExecutionPrivilegeKinds: [...types.#Kind]
 PathfindingRelationships: [...types.#Kind]
+InboundOutboundRelationshipKinds: [...types.#Kind]
+PostProcessedRelationships: [...types.#Kind]
 
 // Property name enumerations
 AppOwnerOrganizationID: types.#StringEnum & {
@@ -48,6 +53,13 @@ AppDisplayName: types.#StringEnum & {
 	schema:         "azure"
 	name:           "App Display Name"
 	representation: "appdisplayname"
+}
+
+LoginURL: types.#StringEnum & {
+	symbol:         "LoginURL"
+	schema:         "azure"
+	name:           "Login URL"
+	representation: "loginurl"
 }
 
 ServicePrincipalType: types.#StringEnum & {
@@ -229,19 +241,69 @@ ServicePrincipalID: types.#StringEnum & {
 	representation: "service_principal_id"
 }
 
-ServicePrincipalNames: types.#StringEnum & {
-	symbol:         "ServicePrincipalNames"
-	schema:         "azure"
-	name:           "Service Principal Names"
-	representation: "service_principal_names"
-}
-
 TenantID: types.#StringEnum & {
 	symbol:         "TenantID"
 	schema:         "azure"
 	name:           "Tenant ID"
 	representation: "tenantid"
 }
+
+RoleDefinitionId: types.#StringEnum & {
+	symbol:         "RoleDefinitionId"
+	schema:         "azure"
+	name:           "Role Definition Id"
+	representation: "roledefinitionid"
+}
+
+EndUserAssignmentRequiresApproval: types.#StringEnum & {
+	symbol:         "EndUserAssignmentRequiresApproval"
+	schema:         "azure"
+	name:           "End User Assignment Requires Approval"
+	representation: "enduserassignmentrequiresapproval"
+}
+
+EndUserAssignmentRequiresCAPAuthenticationContext: types.#StringEnum & {
+	symbol:         "EndUserAssignmentRequiresCAPAuthenticationContext"
+	schema:         "azure"
+	name:           "End User Assignment Requires CAP Authentication Context"
+	representation: "enduserassignmentrequirescapauthenticationcontext"
+}
+
+EndUserAssignmentUserApprovers: types.#StringEnum & {
+	symbol:         "EndUserAssignmentUserApprovers"
+	schema:         "azure"
+	name:           "End User Assignment User Approvers"
+	representation: "enduserassignmentuserapprovers"
+}
+
+EndUserAssignmentGroupApprovers: types.#StringEnum & {
+	symbol:         "EndUserAssignmentGroupApprovers"
+	schema:         "azure"
+	name:           "End User Assignment Group Approvers"
+	representation: "enduserassignmentgroupapprovers"
+}
+
+EndUserAssignmentRequiresMFA: types.#StringEnum & {
+	symbol:         "EndUserAssignmentRequiresMFA"
+	schema:         "azure"
+	name:           "End User Assignment Requires MFA"
+	representation: "enduserassignmentrequiresmfa"
+}
+
+EndUserAssignmentRequiresJustification: types.#StringEnum & {
+	symbol:         "EndUserAssignmentRequiresJustification"
+	schema:         "azure"
+	name:           "End User Assignment Requires Justification"
+	representation: "enduserassignmentrequiresjustification"
+}
+
+EndUserAssignmentRequiresTicketInformation: types.#StringEnum & {
+	symbol:         "EndUserAssignmentRequiresTicketInformation"
+	schema:         "azure"
+	name:           "End User Assignment Requires Ticket Information"
+	representation: "enduserassignmentrequiresticketinformation"
+}
+
 
 Properties: [
 	AppOwnerOrganizationID,
@@ -251,7 +313,6 @@ Properties: [
 	UserType,
 	TenantID,
 	ServicePrincipalID,
-	ServicePrincipalNames,
 	OperatingSystemVersion,
 	TrustType,
 	IsBuiltIn,
@@ -269,12 +330,21 @@ Properties: [
 	MFAEnabled,
 	License,
 	Licenses,
+	LoginURL,
 	MFAEnforced,
 	UserPrincipalName,
 	IsAssignableToRole,
 	PublisherDomain,
 	SignInAudience,
 	RoleTemplateID,
+	RoleDefinitionId,
+	EndUserAssignmentRequiresApproval,
+	EndUserAssignmentRequiresCAPAuthenticationContext,
+	EndUserAssignmentUserApprovers,
+	EndUserAssignmentGroupApprovers,
+	EndUserAssignmentRequiresMFA,
+	EndUserAssignmentRequiresJustification,
+	EndUserAssignmentRequiresTicketInformation
 ]
 
 // Kinds
@@ -393,7 +463,7 @@ LogicApp: types.#Kind & {
 }
 
 AutomationAccount: types.#Kind & {
-  symbol:         "AutomationAccount"
+  	symbol:         "AutomationAccount"
 	schema:         "azure"
 	representation: "AZAutomationAccount"
 }
@@ -625,12 +695,6 @@ KeyVaultContributor: types.#Kind & {
 	representation: "AZKeyVaultContributor"
 }
 
-VMAdminLogin: types.#Kind & {
-	symbol:         "VMAdminLogin"
-	schema:         "azure"
-	representation: "AZVMAdminLogin"
-}
-
 AddMembers: types.#Kind & {
 	symbol:         "AddMembers"
 	schema:         "azure"
@@ -641,12 +705,6 @@ AddSecret: types.#Kind & {
 	symbol:         "AddSecret"
 	schema:         "azure"
 	representation: "AZAddSecret"
-}
-
-ExecuteCommand: types.#Kind & {
-	symbol:         "ExecuteCommand"
-	schema:         "azure"
-	representation: "AZExecuteCommand"
 }
 
 GlobalAdmin: types.#Kind & {
@@ -709,6 +767,24 @@ LogicAppContributor: types.#Kind & {
 	representation:	"AZLogicAppContributor"
 }
 
+SyncedToADUser: types.#Kind & {
+	symbol:			"SyncedToADUser"
+	schema:			"azure"
+	representation:	"SyncedToADUser"
+}
+
+AZRoleEligible: types.#Kind & {
+	symbol: "AZRoleEligible"
+	schema: "azure"
+	representation: "AZRoleEligible"
+}
+
+AZRoleApprover: types.#Kind & {
+	symbol:			"AZRoleApprover"
+	schema:			"azure"
+	representation:	"AZRoleApprover"
+}
+
 RelationshipKinds: [
 	AvereContributor,
 	Contains,
@@ -756,6 +832,9 @@ RelationshipKinds: [
 	AZMGAddSecret,
 	AZMGGrantAppRoles,
 	AZMGGrantRole,
+	SyncedToADUser,
+	AZRoleEligible,
+	AZRoleApprover,
 ]
 
 AppRoleTransitRelationshipKinds: [
@@ -816,9 +895,9 @@ ExecutionPrivilegeKinds: [
 	ExecuteCommand,
 ]
 
-PathfindingRelationships: [
+// Edges that are used during inbound and outbound traversals
+InboundOutboundRelationshipKinds: [
 	AvereContributor,
-	Contains,
 	Contributor,
 	GetCertificates,
 	GetKeys,
@@ -855,4 +934,27 @@ PathfindingRelationships: [
 	AZMGAddSecret,
 	AZMGGrantAppRoles,
 	AZMGGrantRole,
+	SyncedToADUser,
+	AZRoleEligible,
+	AZRoleApprover,
+	Contains
+]
+
+PathfindingRelationships: list.Concat([InboundOutboundRelationshipKinds])
+
+PostProcessedRelationships: [
+	AddSecret,
+	ExecuteCommand,
+	ResetPassword,
+	AddMembers,
+	GlobalAdmin,
+	PrivilegedRoleAdmin,
+	PrivilegedAuthAdmin,
+	AZMGAddMember,
+	AZMGAddOwner,
+	AZMGAddSecret,
+	AZMGGrantAppRoles,
+	AZMGGrantRole,
+	SyncedToADUser,
+	AZRoleApprover,
 ]

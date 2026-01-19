@@ -14,8 +14,9 @@
 //
 // SPDX-License-Identifier: Apache-2.0
 
+import { OptionsObject } from 'notistack';
+import { SNACKBAR_DURATION } from '../../constants';
 import { Notification } from './model';
-
 export enum ActionType {
     Add = 'add',
     Dismiss = 'dismiss',
@@ -27,15 +28,15 @@ export type Dismiss = { type: ActionType.Dismiss; key?: string };
 export type Remove = { type: ActionType.Remove; key?: string };
 export type NotificationAction = Add | Dismiss | Remove;
 
-export const addNotification = (notification: string, key?: string, options: any = {}): Add => {
+export const addNotification = (notification: string, key?: string, options: OptionsObject = {}): Add => {
     return {
         type: ActionType.Add,
         value: {
             message: notification,
             key: key || (new Date().getTime() + Math.random()).toString(),
             options: {
+                autoHideDuration: SNACKBAR_DURATION,
                 ...options,
-                autoHideDuration: 5000,
             },
             dismissed: false,
         },

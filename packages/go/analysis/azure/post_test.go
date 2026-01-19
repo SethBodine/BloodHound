@@ -20,17 +20,16 @@ import (
 	"context"
 	"testing"
 
-	"github.com/RoaringBitmap/roaring"
 	"github.com/bloodhoundad/azurehound/v2/constants"
-	"github.com/specterops/bloodhound/dawgs/graph"
-	graph_mocks "github.com/specterops/bloodhound/dawgs/graph/mocks"
-	"github.com/specterops/bloodhound/dawgs/util/size"
-	azschema "github.com/specterops/bloodhound/graphschema/azure"
+	graph_mocks "github.com/specterops/bloodhound/cmd/api/src/vendormocks/dawgs/graph"
+	"github.com/specterops/bloodhound/packages/go/analysis/azure"
+	azschema "github.com/specterops/bloodhound/packages/go/graphschema/azure"
+	"github.com/specterops/dawgs/cardinality"
+	"github.com/specterops/dawgs/graph"
+	"github.com/specterops/dawgs/util/size"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 	"go.uber.org/mock/gomock"
-
-	"github.com/specterops/bloodhound/analysis/azure"
 )
 
 var (
@@ -43,16 +42,16 @@ var (
 // setupRoleAssignments is used to create a testable RoleAssignments struct. It is used in all RoleAssignments tests
 // and may require adjusting tests if modified
 func setupRoleAssignments() azure.RoleAssignments {
-	roleMap := map[string]*roaring.Bitmap{
-		constants.GlobalAdministratorRoleID:   roaring.New(),
-		constants.ReportsReaderRoleID:         roaring.New(),
-		constants.HelpdeskAdministratorRoleID: roaring.New(),
-		constants.PartnerTier1SupportRoleID:   roaring.New(),
+	roleMap := map[string]cardinality.Duplex[uint64]{
+		constants.GlobalAdministratorRoleID:   cardinality.NewBitmap64(),
+		constants.ReportsReaderRoleID:         cardinality.NewBitmap64(),
+		constants.HelpdeskAdministratorRoleID: cardinality.NewBitmap64(),
+		constants.PartnerTier1SupportRoleID:   cardinality.NewBitmap64(),
 	}
-	roleMap[constants.GlobalAdministratorRoleID].Add(uint32(user.ID))
-	roleMap[constants.ReportsReaderRoleID].Add(uint32(group.ID))
-	roleMap[constants.HelpdeskAdministratorRoleID].Add(uint32(group.ID))
-	roleMap[constants.PartnerTier1SupportRoleID].Add(uint32(app.ID))
+	roleMap[constants.GlobalAdministratorRoleID].Add(uint64(user.ID))
+	roleMap[constants.ReportsReaderRoleID].Add(uint64(group.ID))
+	roleMap[constants.HelpdeskAdministratorRoleID].Add(uint64(group.ID))
+	roleMap[constants.PartnerTier1SupportRoleID].Add(uint64(app.ID))
 
 	return azure.RoleAssignments{
 		// user2 has no roles! this is intentional
@@ -72,16 +71,16 @@ func TestRoleAssignments_NodeHasRole(t *testing.T) {
 
 func TestRoleAssignments_UsersWithoutRoles(t *testing.T) {
 	assignments := setupRoleAssignments()
-	assert.False(t, assignments.UsersWithoutRoles().Contains(uint32(user.ID)))
-	assert.True(t, assignments.UsersWithoutRoles().Contains(uint32(user2.ID)))
+	assert.False(t, assignments.UsersWithoutRoles().Contains(uint64(user.ID)))
+	assert.True(t, assignments.UsersWithoutRoles().Contains(uint64(user2.ID)))
 }
 
 func TestRoleAssignments_NodesWithRole(t *testing.T) {
 	assignments := setupRoleAssignments()
-	assert.True(t, assignments.PrincipalsWithRole(constants.ReportsReaderRoleID, constants.GlobalAdministratorRoleID).Contains(uint32(user.ID)))
-	assert.True(t, assignments.PrincipalsWithRole(constants.ReportsReaderRoleID, constants.GlobalAdministratorRoleID).Contains(uint32(group.ID)))
-	assert.True(t, assignments.PrincipalsWithRole(constants.ReportsReaderRoleID, constants.HelpdeskAdministratorRoleID).Contains(uint32(group.ID)))
-	assert.False(t, assignments.PrincipalsWithRole(constants.ReportsReaderRoleID).Contains(uint32(user.ID)))
+	assert.True(t, assignments.PrincipalsWithRole(constants.ReportsReaderRoleID, constants.GlobalAdministratorRoleID).Contains(uint64(user.ID)))
+	assert.True(t, assignments.PrincipalsWithRole(constants.ReportsReaderRoleID, constants.GlobalAdministratorRoleID).Contains(uint64(group.ID)))
+	assert.True(t, assignments.PrincipalsWithRole(constants.ReportsReaderRoleID, constants.HelpdeskAdministratorRoleID).Contains(uint64(group.ID)))
+	assert.False(t, assignments.PrincipalsWithRole(constants.ReportsReaderRoleID).Contains(uint64(user.ID)))
 }
 
 func TestRoleAssignments_NodesWithRolesExclusive(t *testing.T) {
@@ -171,7 +170,7 @@ func TestRoleMembers(t *testing.T) {
 	)
 	defer ctrl.Finish()
 
-	mockTx.EXPECT().TraversalMemoryLimit().Return(1 * size.Gibibyte).AnyTimes()
+	mockTx.EXPECT().GraphQueryMemoryLimit().Return(1 * size.Gibibyte).AnyTimes()
 
 	mockRelQuery1 := graph_mocks.NewMockRelationshipQuery(ctrl)
 	mockRelQuery2 := graph_mocks.NewMockRelationshipQuery(ctrl)
@@ -266,7 +265,7 @@ func TestFetchTenants(t *testing.T) {
 		)
 		mockTx.EXPECT().Nodes().Return(mockNodeQuery)
 		mockNodeQuery.EXPECT().Filterf(gomock.Any()).Return(mockFilterf)
-		mockFilterf.EXPECT().Fetch(gomock.AssignableToTypeOf(func(graph.Cursor[*graph.Node]) error { return nil })).DoAndReturn(func(delegate func(graph.Cursor[*graph.Node]) error) error {
+		mockFilterf.EXPECT().Fetch(gomock.AssignableToTypeOf(func(graph.Cursor[*graph.Node]) error { return nil }), gomock.Any()).DoAndReturn(func(delegate func(graph.Cursor[*graph.Node]) error, _ ...any) error {
 			mockCursor := graph_mocks.NewMockCursor[*graph.Node](ctrl)
 			c := make(chan *graph.Node, 1)
 			go func() {

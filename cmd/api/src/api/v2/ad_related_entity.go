@@ -21,13 +21,14 @@ import (
 	"fmt"
 	"net/http"
 
-	adAnalysis "github.com/specterops/bloodhound/analysis/ad"
-	"github.com/specterops/bloodhound/dawgs/graph"
-	"github.com/specterops/bloodhound/dawgs/ops"
-	"github.com/specterops/bloodhound/graphschema/ad"
-	"github.com/specterops/bloodhound/src/api"
-	"github.com/specterops/bloodhound/src/model/appcfg"
-	"github.com/specterops/bloodhound/src/queries"
+	"github.com/specterops/bloodhound/cmd/api/src/api"
+	"github.com/specterops/bloodhound/cmd/api/src/model"
+	"github.com/specterops/bloodhound/cmd/api/src/model/appcfg"
+	"github.com/specterops/bloodhound/cmd/api/src/queries"
+	adAnalysis "github.com/specterops/bloodhound/packages/go/analysis/ad"
+	"github.com/specterops/bloodhound/packages/go/graphschema/ad"
+	"github.com/specterops/dawgs/graph"
+	"github.com/specterops/dawgs/ops"
 )
 
 // handleAdRelatedEntityQuery is for retrieving entities related to a specific entity.
@@ -43,11 +44,13 @@ func (s *Resources) handleAdRelatedEntityQuery(response http.ResponseWriter, req
 	} else if results, count, err := s.GraphQuery.GetADEntityQueryResult(request.Context(), params, entityPanelCachingFlag.Enabled); err != nil {
 		if errors.Is(err, queries.ErrGraphUnsupported) || errors.Is(err, queries.ErrUnsupportedDataType) {
 			api.WriteErrorResponse(request.Context(), api.BuildErrorResponse(http.StatusBadRequest, fmt.Sprintf(api.FmtErrorResponseDetailsBadQueryParameters, err), request), response)
-		} else if errors.Is(err, ops.ErrTraversalMemoryLimit) {
+		} else if errors.Is(err, ops.ErrGraphQueryMemoryLimit) {
 			api.WriteErrorResponse(request.Context(), api.BuildErrorResponse(http.StatusInternalServerError, "calculating the request results exceeded memory limitations due to the volume of objects involved", request), response)
 		} else {
 			api.WriteErrorResponse(request.Context(), api.BuildErrorResponse(http.StatusInternalServerError, "an unknown error occurred during the request", request), response)
 		}
+	} else if params.RequestedType == model.DataTypeGraph {
+		api.WriteJSONResponse(request.Context(), results, http.StatusOK, response)
 	} else {
 		api.WriteResponseWrapperWithPagination(request.Context(), results, params.Limit, params.Skip, count, http.StatusOK, response)
 	}
@@ -131,7 +134,7 @@ func (s *Resources) ListADEntityControllables(response http.ResponseWriter, requ
 }
 
 func (s *Resources) ListADEntityLinkedGPOs(response http.ResponseWriter, request *http.Request) {
-	s.handleAdRelatedEntityQuery(response, request, "ListADEntityLinkedGPOs", adAnalysis.FetchEntityLinkedGPOPaths, adAnalysis.FetchEntityLinkedGPOList)
+	s.handleAdRelatedEntityQuery(response, request, "ListADEntityLinkedGPOs", adAnalysis.FetchEnforcedGPOsPaths, adAnalysis.FetchEnforcedGPOs)
 }
 
 func (s *Resources) ListADDomainContainedUsers(response http.ResponseWriter, request *http.Request) {
@@ -208,4 +211,32 @@ func (s *Resources) ListADGPOAffectedComputers(response http.ResponseWriter, req
 
 func (s *Resources) ListADGPOAffectedTierZero(response http.ResponseWriter, request *http.Request) {
 	s.handleAdRelatedEntityQuery(response, request, "ListADGPOAffectedTierZero", adAnalysis.FetchGPOAffectedTierZeroPathDelegate, adAnalysis.CreateGPOAffectedIntermediariesListDelegate(adAnalysis.SelectGPOTierZeroCandidateFilter))
+}
+
+func (s *Resources) ListADIssuancePolicyLinkedCertTemplates(response http.ResponseWriter, request *http.Request) {
+	s.handleAdRelatedEntityQuery(response, request, "ListADIssuancePolicyLinkedCertTemplates", adAnalysis.FetchPolicyLinkedCertTemplatePaths, adAnalysis.FetchPolicyLinkedCertTemplates)
+}
+
+func (s *Resources) ListRootCAPKIHierarchy(response http.ResponseWriter, request *http.Request) {
+	s.handleAdRelatedEntityQuery(response, request, "ListRootCAPKIHierarchy", adAnalysis.CreateRootCAPKIHierarchyPathDelegate, adAnalysis.CreateRootCAPKIHierarchyListDelegate)
+}
+
+func (s *Resources) ListCAPKIHierarchy(response http.ResponseWriter, request *http.Request) {
+	s.handleAdRelatedEntityQuery(response, request, "ListCAPKIHierarchy", adAnalysis.CreateCAPKIHierarchyPathDelegate, adAnalysis.CreateCAPKIHierarchyListDelegate)
+}
+
+func (s *Resources) ListPublishedTemplates(response http.ResponseWriter, request *http.Request) {
+	s.handleAdRelatedEntityQuery(response, request, "ListPublishedTemplates", adAnalysis.CreatePublishedTemplatesPathDelegate, adAnalysis.CreatePublishedTemplatesListDelegate)
+}
+
+func (s *Resources) ListPublishedToCAs(response http.ResponseWriter, request *http.Request) {
+	s.handleAdRelatedEntityQuery(response, request, "ListPublishedToCAs", adAnalysis.CreatePublishedToCAsPathDelegate, adAnalysis.CreatePublishedToCAsListDelegate)
+}
+
+func (s *Resources) ListTrustedCAs(response http.ResponseWriter, request *http.Request) {
+	s.handleAdRelatedEntityQuery(response, request, "ListTrustedCAs", adAnalysis.CreateTrustedCAsPathDelegate, adAnalysis.CreateTrustedCAsListDelegate)
+}
+
+func (s *Resources) ListADCSEscalations(response http.ResponseWriter, request *http.Request) {
+	s.handleAdRelatedEntityQuery(response, request, "ListADCSEscalations", adAnalysis.CreateADCSEscalationsPathDelegate, adAnalysis.CreateADCSEscalationsListDelegate)
 }

@@ -14,26 +14,25 @@
 //
 // SPDX-License-Identifier: Apache-2.0
 
-import { Box, useTheme } from '@mui/material';
+import { Box } from '@mui/material';
+import { CommunityCollectorType } from 'js-client-library';
 import CollectorCard from '../CollectorCard';
 
 interface CollectorCardListProps {
     collectors: {
-        collectorType: 'sharphound' | 'azurehound';
+        collectorType: CommunityCollectorType;
         version: string;
         checksum: string;
         isLatest: boolean;
         isDeprecated: boolean;
-        onClickDownload: (collectorType: 'sharphound' | 'azurehound', version: string) => void;
-        onClickDownloadChecksum: (collectorType: 'sharphound' | 'azurehound', version: string) => void;
+        onClickDownload: (collectorType: CommunityCollectorType, version: string) => void;
+        onClickDownloadChecksum: (collectorType: CommunityCollectorType, version: string) => void;
     }[];
 }
 
 const CollectorCardList: React.FC<CollectorCardListProps> = ({ collectors }) => {
-    const theme = useTheme();
-
     return (
-        <Box display='grid' rowGap={theme.spacing(2)}>
+        <Box display='grid' rowGap={'1rem'}>
             {collectors.map((collector, index) => (
                 <Box key={index}>
                     <CollectorCard

@@ -18,31 +18,63 @@ package appcfg
 
 import (
 	"context"
+	"encoding/json"
+	"errors"
 	"fmt"
+	"log/slog"
+	"reflect"
 	"time"
 
 	iso8601 "github.com/channelmeter/iso8601duration"
-	"github.com/specterops/bloodhound/dawgs/drivers/neo4j"
-	"github.com/specterops/bloodhound/log"
-	"github.com/specterops/bloodhound/src/database/types"
-	"github.com/specterops/bloodhound/src/model"
+	"github.com/specterops/bloodhound/cmd/api/src/database/types"
+	"github.com/specterops/bloodhound/cmd/api/src/model"
+	"github.com/specterops/bloodhound/cmd/api/src/utils"
+	"github.com/specterops/bloodhound/cmd/api/src/utils/validation"
+	"github.com/specterops/dawgs/drivers/neo4j"
+)
+
+type ParameterKey string
+
+const (
+	PasswordExpirationWindow ParameterKey = "auth.password_expiration_window"
+	SessionTTLHours          ParameterKey = "auth.session_ttl_hours"
+	Neo4jConfigs             ParameterKey = "neo4j.configuration"
+	CitrixRDPSupportKey      ParameterKey = "analysis.citrix_rdp_support"
+	PruneTTL                 ParameterKey = "prune.ttl"
+	ReconciliationKey        ParameterKey = "analysis.reconciliation"
+
+	// The below keys are not intended to be user updateable, so should not be added to IsValidKey
+	ScheduledAnalysis          ParameterKey = "analysis.scheduled"
+	TrustedProxiesConfig       ParameterKey = "http.trusted_proxies"
+	FedEULACustomTextKey       ParameterKey = "eula.custom_text"
+	TierManagementParameterKey ParameterKey = "analysis.tiering"
+	AGTParameterKey            ParameterKey = "analysis.tagging"
+	StaleClientUpdatedLogicKey ParameterKey = "pipeline.updated_stale_client"
+	RetainIngestedFilesKey     ParameterKey = "analysis.retain_ingest_files"
 )
 
 const (
-	PasswordExpirationWindow            = "auth.password_expiration_window"
-	DefaultPasswordExpirationWindow     = "P90D"
-	Neo4jConfigs                        = "neo4j.configuration"
-	PasswordExpirationWindowName        = "Local Auth Password Expiry Window"
-	Neo4jConfigsName                    = "Neo4j Configuration Parameters"
-	PasswordExpirationWindowDescription = "This configuration parameter sets the local auth password expiry window for users that have valid auth secrets. Values for this configuration must follow the duration specification of ISO-8601."
-	Neo4jConfigsDescription             = "This configuration parameter sets the BatchWriteSize and the BatchFlushSize for Neo4J."
+	DefaultPasswordExpirationWindow = time.Hour * 24 * 90
+
+	DefaultSessionTTLHours = 8
+
+	DefaultPruneBaseTTL           = time.Hour * 24 * 7
+	DefaultPruneHasSessionEdgeTTL = time.Hour * 24 * 3
+
+	DefaultTierLimit  = 1
+	DefaultLabelLimit = 0
+
+	MaxDawgsWorkerLimit         = 6 // This is the maximum analysis parallel workers during tagging
+	DefaultDawgsWorkerLimit     = 2 // This is the parallel workers during tagging
+	DefaultExpansionWorkerLimit = 3 // This is the size of the expansion worker pool during tagging
+	DefaultSelectorWorkerLimit  = 7 // This is the size of the selector worker pool during tagging
 )
 
 // Parameter is a runtime configuration parameter that can be fetched from the appcfg.ParameterService interface. The
 // Value member is a DB-safe JSON type wrapper that can store arbitrary JSON objects and map them to golang struct
 // definitions.
 type Parameter struct {
-	Key         string            `json:"key" gorm:"unique"`
+	Key         ParameterKey      `json:"key" gorm:"unique"`
 	Name        string            `json:"name"`
 	Description string            `json:"description"`
 	Value       types.JSONBObject `json:"value"`
@@ -52,25 +84,108 @@ type Parameter struct {
 
 // Map is a convenience function for mapping the data stored in the Value Parameter struct member onto
 // a richer type provided by the given value.
-func (s Parameter) Map(value any) error {
+func (s *Parameter) Map(value any) error {
 	return s.Value.Map(value)
 }
 
-func (s Parameter) IsValid(parameter string) bool {
-	availParams, err := AvailableParameters()
-	if err != nil {
-		log.Errorf("Error occurred getting AvailableParamters: %v", err)
+func (s *Parameter) IsValidKey(parameterKey ParameterKey) bool {
+	switch parameterKey {
+	case PasswordExpirationWindow, Neo4jConfigs, PruneTTL, CitrixRDPSupportKey, ReconciliationKey:
+		return true
+	default:
 		return false
 	}
+}
 
-	_, valid := availParams[parameter]
-	return valid
+// IsProtectedKey These keys should not be updatable by users
+func (s *Parameter) IsProtectedKey(parameterKey ParameterKey) bool {
+	switch parameterKey {
+	case ScheduledAnalysis, TrustedProxiesConfig, FedEULACustomTextKey, TierManagementParameterKey, SessionTTLHours, StaleClientUpdatedLogicKey, RetainIngestedFilesKey, AGTParameterKey:
+		return true
+	default:
+		return false
+	}
+}
+
+// Validate WARNING - This will not protect the protected keys, use IsValidKey for that, this validates the json payload matches the intended parameter values
+func (s *Parameter) Validate() utils.Errors {
+	// validate the base parameter
+	var (
+		objMap map[string]any
+		ok     bool
+	)
+	if objMap, ok = s.Value.Object.(map[string]any); !ok || len(objMap) == 0 {
+		return utils.Errors{errors.New("missing or invalid property: value")}
+	}
+
+	// validate the specific parameter value
+	var v any
+	switch s.Key {
+	case PasswordExpirationWindow:
+		v = &PasswordExpiration{}
+	case Neo4jConfigs:
+		v = &Neo4jParameters{}
+	case PruneTTL:
+		v = &PruneTTLParameters{}
+	case CitrixRDPSupportKey:
+		v = &CitrixRDPSupport{}
+	case ReconciliationKey:
+		v = &ReconciliationParameter{}
+	case TierManagementParameterKey:
+		v = &TieringParameters{}
+	case ScheduledAnalysis:
+		v = &ScheduledAnalysisParameter{}
+	case TrustedProxiesConfig:
+		v = &TrustedProxiesParameters{}
+	case FedEULACustomTextKey:
+		v = &FedEULACustomTextParameter{}
+	case SessionTTLHours:
+		v = &SessionTTLHoursParameter{}
+	case StaleClientUpdatedLogicKey:
+		v = &StaleClientUpdatedLogic{}
+	case AGTParameterKey:
+		v = &AGTParameters{}
+	default:
+		return utils.Errors{errors.New("invalid key")}
+	}
+
+	// numField panics when val is not a struct, so we need both checks
+	if val := reflect.Indirect(reflect.ValueOf(v)); val.Kind() != reflect.Struct || val.NumField() != len(objMap) {
+		return utils.Errors{errors.New("value property contains an invalid field")}
+	} else if err := s.Map(&v); err != nil {
+		return utils.Errors{err}
+	} else if errs := validation.Validate(v); errs != nil {
+		return errs
+	}
+
+	return nil
+}
+
+func (s *Parameter) AuditData() model.AuditData {
+	return model.AuditData{
+		"key":   s.Key,
+		"value": s.Value,
+	}
+}
+
+type AppConfigUpdateRequest struct {
+	Key   string         `json:"key"`
+	Value map[string]any `json:"value"`
+}
+
+func ConvertAppConfigUpdateRequestToParameter(appConfigUpdateRequest AppConfigUpdateRequest) (Parameter, error) {
+	if value, err := types.NewJSONBObject(appConfigUpdateRequest.Value); err != nil {
+		return Parameter{}, fmt.Errorf("failed to convert value to JSONBObject: %w", err)
+	} else {
+		return Parameter{
+			Key:   ParameterKey(appConfigUpdateRequest.Key),
+			Value: value,
+		}, nil
+	}
 }
 
 // Parameters is a collection of Parameter structs.
 type Parameters []Parameter
-
-type ParameterSet map[string]Parameter
 
 // ParameterService is a contract which defines expected functionality for fetching and setting Parameter from an
 // abstract backend storage.
@@ -79,64 +194,53 @@ type ParameterService interface {
 	GetAllConfigurationParameters(ctx context.Context) (Parameters, error)
 
 	// GetConfigurationParameter attempts to fetch a Parameter struct by its parameter name.
-	GetConfigurationParameter(ctx context.Context, parameter string) (Parameter, error)
+	GetConfigurationParameter(ctx context.Context, parameterKey ParameterKey) (Parameter, error)
 
 	// SetConfigurationParameter attempts to store or update the given Parameter.
 	SetConfigurationParameter(ctx context.Context, configurationParameter Parameter) error
 }
 
-func AvailableParameters() (ParameterSet, error) {
-	if passwordExpirationValue, err := types.NewJSONBObject(PasswordExpiration{
-		Duration: DefaultPasswordExpirationWindow,
-	}); err != nil {
-		return ParameterSet{}, fmt.Errorf("error creating PasswordExpiration parameter: %w", err)
-	} else if neo4jExpirationValue, err := types.NewJSONBObject(Neo4jParameters{
-		BatchWriteSize: neo4j.DefaultBatchWriteSize,
-		WriteFlushSize: neo4j.DefaultWriteFlushSize,
-	}); err != nil {
-		return ParameterSet{}, fmt.Errorf("error creating neo4jExpirationValue parameter: %w", err)
-	} else {
-		return ParameterSet{
-			PasswordExpirationWindow: {
-				Key:         PasswordExpirationWindow,
-				Name:        PasswordExpirationWindowName,
-				Description: PasswordExpirationWindowDescription,
-				Value:       passwordExpirationValue,
-				Serial:      model.Serial{},
-			},
-			Neo4jConfigs: {
-				Key:         Neo4jConfigs,
-				Name:        Neo4jConfigsName,
-				Description: Neo4jConfigsDescription,
-				Value:       neo4jExpirationValue,
-			},
-		}, nil
-	}
-}
+// PasswordExpirationWindow
 
 type PasswordExpiration struct {
-	Duration string `json:"duration"`
+	Duration time.Duration `json:"duration"`
 }
 
-func (s PasswordExpiration) ParseDuration() (time.Duration, error) {
-	if duration, err := iso8601.FromString(s.Duration); err != nil {
-		return 0, err
+// Because PasswordExpiration are stored as ISO strings, but we want to use them as durations, we override UnmarshalJSON to handle the conversion
+func (s *PasswordExpiration) UnmarshalJSON(data []byte) error {
+	pDb := struct {
+		Duration string `json:"duration,omitempty"`
+	}{}
+
+	if err := json.Unmarshal(data, &pDb); err != nil {
+		return fmt.Errorf("error unmarshaling data for PasswordExpiration: %w", err)
 	} else {
-		return duration.ToDuration(), nil
+		if duration, err := iso8601.FromString(pDb.Duration); err != nil {
+			return err
+		} else {
+			s.Duration = duration.ToDuration()
+		}
+
+		return nil
 	}
+
 }
 
-func GetPasswordExpiration(ctx context.Context, service ParameterService) (time.Duration, error) {
+func GetPasswordExpiration(ctx context.Context, service ParameterService) time.Duration {
 	var expiration PasswordExpiration
 
 	if cfg, err := service.GetConfigurationParameter(ctx, PasswordExpirationWindow); err != nil {
-		return 0, err
+		slog.WarnContext(ctx, "Failed to fetch password expiratio configuration; returning default values")
+		return DefaultPasswordExpirationWindow
 	} else if err := cfg.Map(&expiration); err != nil {
-		return 0, err
-	} else {
-		return expiration.ParseDuration()
+		slog.WarnContext(ctx, "Invalid password expiration configuration supplied; returning default values")
+		return DefaultPasswordExpirationWindow
 	}
+
+	return expiration.Duration
 }
+
+// Neo4jConfigs
 
 type Neo4jParameters struct {
 	WriteFlushSize int `json:"write_flush_size,omitempty"`
@@ -144,21 +248,270 @@ type Neo4jParameters struct {
 }
 
 func GetNeo4jParameters(ctx context.Context, service ParameterService) Neo4jParameters {
-	var result Neo4jParameters
+	var result = Neo4jParameters{
+		WriteFlushSize: neo4j.DefaultWriteFlushSize,
+		BatchWriteSize: neo4j.DefaultBatchWriteSize,
+	}
 
 	if neo4jParametersCfg, err := service.GetConfigurationParameter(ctx, Neo4jConfigs); err != nil {
-		log.Errorf("failed to fetch neo4j configuration; returning default values")
-		result = Neo4jParameters{
-			WriteFlushSize: neo4j.DefaultWriteFlushSize,
-			BatchWriteSize: neo4j.DefaultBatchWriteSize,
-		}
-	} else if err = neo4jParametersCfg.Map(result); err != nil {
-		log.Errorf("invalid neo4j configuration supplied; returning default values")
-		result = Neo4jParameters{
-			WriteFlushSize: neo4j.DefaultWriteFlushSize,
-			BatchWriteSize: neo4j.DefaultBatchWriteSize,
-		}
+		slog.WarnContext(ctx, "Failed to fetch neo4j configuration; returning default values")
+	} else if err = neo4jParametersCfg.Map(&result); err != nil {
+		slog.WarnContext(ctx, "Invalid neo4j configuration supplied; returning default values")
 	}
 
 	return result
+}
+
+// CitrixRDP
+
+type CitrixRDPSupport struct {
+	Enabled bool `json:"enabled,omitempty"`
+}
+
+func GetCitrixRDPSupport(ctx context.Context, service ParameterService) bool {
+	var result CitrixRDPSupport
+
+	if cfg, err := service.GetConfigurationParameter(ctx, CitrixRDPSupportKey); err != nil {
+		slog.WarnContext(ctx, "Failed to fetch CitrixRDPSupport configuration; returning default values")
+	} else if err := cfg.Map(&result); err != nil {
+		slog.WarnContext(ctx, fmt.Sprintf("Invalid CitrixRDPSupport configuration supplied, %v. returning default values.", err))
+	}
+
+	return result.Enabled
+}
+
+// PruneTTL
+
+type PruneTTLParameters struct {
+	BaseTTL           time.Duration `json:"base_ttl,omitempty" validate:"duration,min=P4D,max=P30D"`
+	HasSessionEdgeTTL time.Duration `json:"has_session_edge_ttl,omitempty" validate:"duration,min=P2D,max=P7D"`
+}
+
+// Because PruneTTLs are stored as ISO strings, but we want to use them as durations, we override UnmarshalJSON to handle the conversion
+func (s *PruneTTLParameters) UnmarshalJSON(data []byte) error {
+	pTTL := struct {
+		BaseTTL           string `json:"base_ttl,omitempty"`
+		HasSessionEdgeTTL string `json:"has_session_edge_ttl,omitempty"`
+	}{}
+
+	if err := json.Unmarshal(data, &pTTL); err != nil {
+		return fmt.Errorf("error unmarshaling data for PruneTTLParameters: %w", err)
+	} else {
+		if duration, err := iso8601.FromString(pTTL.BaseTTL); err != nil {
+			return errors.New("missing or invalid base_ttl")
+		} else {
+			s.BaseTTL = duration.ToDuration()
+		}
+		if duration, err := iso8601.FromString(pTTL.HasSessionEdgeTTL); err != nil {
+			return errors.New("missing or invalid has_session_edge_ttl")
+		} else {
+
+			s.HasSessionEdgeTTL = duration.ToDuration()
+		}
+
+		return nil
+	}
+}
+
+func GetPruneTTLParameters(ctx context.Context, service ParameterService) PruneTTLParameters {
+	result := PruneTTLParameters{
+		BaseTTL:           DefaultPruneBaseTTL,
+		HasSessionEdgeTTL: DefaultPruneHasSessionEdgeTTL,
+	}
+
+	if pruneTTLParametersCfg, err := service.GetConfigurationParameter(ctx, PruneTTL); err != nil {
+		slog.WarnContext(ctx, "Failed to fetch prune TTL configuration; returning default values")
+	} else if err = pruneTTLParametersCfg.Map(&result); err != nil {
+		slog.WarnContext(ctx, fmt.Sprintf("Invalid prune TTL configuration supplied; returning default values %+v", err))
+	}
+
+	return result
+}
+
+// Reconciliation
+
+type ReconciliationParameter struct {
+	Enabled bool `json:"enabled,omitempty"`
+}
+
+func GetReconciliationParameter(ctx context.Context, service ParameterService) bool {
+	result := ReconciliationParameter{Enabled: true}
+
+	if cfg, err := service.GetConfigurationParameter(ctx, ReconciliationKey); err != nil {
+		slog.WarnContext(ctx, "Failed to fetch reconciliation configuration; returning default values")
+	} else if err := cfg.Map(&result); err != nil {
+		slog.WarnContext(ctx, fmt.Sprintf("Invalid reconciliation configuration supplied, %v. returning default values.", err))
+	}
+
+	return result.Enabled
+}
+
+type ScheduledAnalysisParameter struct {
+	Enabled bool   `json:"enabled,omitempty"`
+	RRule   string `json:"rrule,omitempty" validate:"rrule"`
+}
+
+func GetScheduledAnalysisParameter(ctx context.Context, service ParameterService) (ScheduledAnalysisParameter, error) {
+	result := ScheduledAnalysisParameter{Enabled: false, RRule: ""}
+
+	if cfg, err := service.GetConfigurationParameter(ctx, ScheduledAnalysis); err != nil {
+		return result, err
+	} else if err := cfg.Map(&result); err != nil {
+		return result, err
+	}
+
+	return result, nil
+}
+
+type TrustedProxiesParameters struct {
+	TrustedProxies int `json:"trusted_proxies,omitempty"`
+}
+
+func GetTrustedProxiesParameters(ctx context.Context, service ParameterService) int {
+	var result = TrustedProxiesParameters{
+		TrustedProxies: 0,
+	}
+
+	if trustedProxiesParametersCfg, err := service.GetConfigurationParameter(ctx, TrustedProxiesConfig); err != nil {
+		slog.WarnContext(ctx, "Failed to fetch trusted proxies configuration; returning default values")
+	} else if err = trustedProxiesParametersCfg.Map(&result); err != nil {
+		slog.WarnContext(ctx, "Invalid trusted proxies configuration supplied; returning default values")
+	}
+
+	return result.TrustedProxies
+}
+
+type TieringParameters struct {
+	TierLimit                int  `json:"tier_limit,omitempty"`
+	LabelLimit               int  `json:"label_limit,omitempty"`
+	MultiTierAnalysisEnabled bool `json:"multi_tier_analysis_enabled,omitempty"`
+}
+
+func GetTieringParameters(ctx context.Context, service ParameterService) TieringParameters {
+	result := TieringParameters{
+		TierLimit:                DefaultTierLimit,
+		LabelLimit:               DefaultLabelLimit,
+		MultiTierAnalysisEnabled: false,
+	}
+
+	if tieringParametersCfg, err := service.GetConfigurationParameter(ctx, TierManagementParameterKey); err != nil {
+		slog.WarnContext(ctx, "Failed to fetch tiering configuration; returning default values")
+	} else if err = tieringParametersCfg.Map(&result); err != nil {
+		slog.WarnContext(ctx, fmt.Sprintf("Invalid tiering configuration supplied; returning default values %+v", err))
+	}
+
+	return result
+}
+
+type AGTParameters struct {
+	DAWGsWorkerLimit     int `json:"dawgs_worker_limit,omitempty"`
+	ExpansionWorkerLimit int `json:"expansion_worker_limit,omitempty"`
+	SelectorWorkerLimit  int `json:"selector_worker_limit,omitempty"`
+}
+
+func GetAGTParameters(ctx context.Context, service ParameterService) AGTParameters {
+	result := AGTParameters{
+		DAWGsWorkerLimit:     DefaultDawgsWorkerLimit,
+		ExpansionWorkerLimit: DefaultExpansionWorkerLimit,
+		SelectorWorkerLimit:  DefaultSelectorWorkerLimit,
+	}
+
+	if agtParametersCfg, err := service.GetConfigurationParameter(ctx, AGTParameterKey); err != nil {
+		slog.WarnContext(ctx, "Failed to fetch agt configuration; returning default values")
+	} else if err = agtParametersCfg.Map(&result); err != nil {
+		slog.WarnContext(ctx, fmt.Sprintf("Invalid agt configuration supplied; returning default values %+v", err))
+	}
+
+	if result.DAWGsWorkerLimit <= 0 || result.DAWGsWorkerLimit > MaxDawgsWorkerLimit {
+		slog.WarnContext(ctx, fmt.Sprintf("Invalid agt configuration supplied for dawgs_worker_limit; setting to max value of %d", MaxDawgsWorkerLimit))
+		result.DAWGsWorkerLimit = MaxDawgsWorkerLimit
+	}
+
+	if result.SelectorWorkerLimit <= 0 {
+		slog.WarnContext(ctx, fmt.Sprintf("Invalid agt configuration supplied for selector_worker_limit; setting to default value of %d", DefaultSelectorWorkerLimit))
+		result.SelectorWorkerLimit = DefaultSelectorWorkerLimit
+	}
+
+	if result.ExpansionWorkerLimit <= 0 {
+		slog.WarnContext(ctx, fmt.Sprintf("Invalid agt configuration supplied for expansion_worker_limit; setting to default value of %d", DefaultExpansionWorkerLimit))
+		result.ExpansionWorkerLimit = DefaultExpansionWorkerLimit
+	}
+
+	return result
+}
+
+type FedEULACustomTextParameter struct {
+	CustomText string `json:"custom_text,omitempty"`
+}
+
+// GetFedRAMPCustomEULA Note this is not gated by the FedEULA FF and that should be checked alongside this
+func GetFedRAMPCustomEULA(ctx context.Context, service ParameterService) string {
+	var result FedEULACustomTextParameter
+
+	if fedEulaCustomText, err := service.GetConfigurationParameter(ctx, FedEULACustomTextKey); err != nil {
+		slog.WarnContext(ctx, "Failed to fetch eula custom text; returning default value")
+	} else if err = fedEulaCustomText.Map(&result); err != nil {
+		slog.WarnContext(ctx, "Invalid eula custom text supplied; returning default value")
+	}
+
+	return result.CustomText
+}
+
+type SessionTTLHoursParameter struct {
+	Hours int `json:"hours,omitempty"`
+}
+
+func GetSessionTTLHours(ctx context.Context, service ParameterService) time.Duration {
+	var result = SessionTTLHoursParameter{
+		Hours: DefaultSessionTTLHours, // Default to a logged in auth session time to live of 8 hours
+	}
+
+	if sessionTTLHours, err := service.GetConfigurationParameter(ctx, SessionTTLHours); err != nil {
+		slog.WarnContext(ctx, "Failed to fetch auth session ttl hours; returning default values")
+	} else if err = sessionTTLHours.Map(&result); err != nil {
+		slog.WarnContext(ctx, "Invalid auth session ttl hours supplied; returning default values")
+	} else if result.Hours <= 0 {
+		slog.WarnContext(ctx, "Auth session ttl hours ≤ 0; returning default values")
+		result.Hours = DefaultSessionTTLHours
+	}
+
+	return time.Hour * time.Duration(result.Hours)
+}
+
+// StaleClientUpdatedLogic
+
+type StaleClientUpdatedLogic struct {
+	Enabled bool `json:"enabled,omitempty"`
+}
+
+func GetStaleClientUpdatedLogic(ctx context.Context, service ParameterService) bool {
+	var result StaleClientUpdatedLogic
+
+	if cfg, err := service.GetConfigurationParameter(ctx, StaleClientUpdatedLogicKey); err != nil {
+		slog.WarnContext(ctx, "Failed to fetch StaleClientLogic configuration; returning default values")
+	} else if err := cfg.Map(&result); err != nil {
+		slog.WarnContext(ctx, fmt.Sprintf("Invalid StaleClientLogic configuration supplied, %v. returning default values.", err))
+	}
+
+	return result.Enabled
+}
+
+// RetainIngestedFiles
+type RetainIngestedFilesParameter struct {
+	Enabled bool `json:"enabled,omitempty"`
+}
+
+func ShouldRetainIngestedFiles(ctx context.Context, service ParameterService) bool {
+	result := RetainIngestedFilesParameter{
+		// Retention should always default to false in the case where the parameter may not be set
+		Enabled: false,
+	}
+
+	if cfg, err := service.GetConfigurationParameter(ctx, RetainIngestedFilesKey); err != nil {
+		slog.WarnContext(ctx, "Failed to fetch ShouldRetainIngestedFiles configuration; returning default values")
+	} else if err := cfg.Map(&result); err != nil {
+		slog.WarnContext(ctx, fmt.Sprintf("Invalid ShouldRetainIngestedFiles configuration supplied, %v. returning default values.", err))
+	}
+
+	return result.Enabled
 }

@@ -22,28 +22,32 @@ import (
 	"time"
 
 	"github.com/gofrs/uuid"
-	"github.com/specterops/bloodhound/src/database/types/null"
+	"github.com/specterops/bloodhound/cmd/api/src/database/types/null"
 )
 
-type FileUploadJob struct {
-	UserID           uuid.UUID   `json:"user_id"`
-	UserEmailAddress null.String `json:"user_email_address"`
-	User             User        `json:"-"`
-	Status           JobStatus   `json:"status"`
-	StatusMessage    string      `json:"status_message"`
-	StartTime        time.Time   `json:"start_time"`
-	EndTime          time.Time   `json:"end_time"`
-	LastIngest       time.Time   `json:"last_ingest"`
-	//DomainResults []DomainCollectionResult `json:"domain_results" gorm:"-"`
+type IngestJob struct {
+	UserID             uuid.NullUUID `json:"user_id"`
+	UserEmailAddress   null.String   `json:"user_email_address"`
+	User               User          `json:"-"`
+	Status             JobStatus     `json:"status"`
+	StatusMessage      string        `json:"status_message"`
+	StartTime          time.Time     `json:"start_time"`
+	EndTime            time.Time     `json:"end_time"`
+	LastIngest         time.Time     `json:"last_ingest"`
+	TotalFiles         int           `json:"total_files"`
+	FailedFiles        int           `json:"failed_files"`
+	PartialFailedFiles int           `json:"partial_failed_files"`
 
 	BigSerial
 }
 
-type FileUploadJobs []FileUploadJob
+type IngestJobs []IngestJob
 
-func (s FileUploadJobs) IsSortable(column string) bool {
+func (s IngestJobs) IsSortable(column string) bool {
 	switch column {
 	case "user_email_address",
+		"total_files",
+		"failed_files",
 		"status",
 		"status_message",
 		"start_time",
@@ -59,7 +63,7 @@ func (s FileUploadJobs) IsSortable(column string) bool {
 	}
 }
 
-func (s FileUploadJobs) ValidFilters() map[string][]FilterOperator {
+func (s IngestJobs) ValidFilters() map[string][]FilterOperator {
 	return map[string][]FilterOperator{
 		"user_id":            {Equals, NotEquals},
 		"user_email_address": {Equals, NotEquals},
@@ -72,10 +76,12 @@ func (s FileUploadJobs) ValidFilters() map[string][]FilterOperator {
 		"created_at":         {Equals, GreaterThan, GreaterThanOrEquals, LessThan, LessThanOrEquals, NotEquals},
 		"updated_at":         {Equals, GreaterThan, GreaterThanOrEquals, LessThan, LessThanOrEquals, NotEquals},
 		"deleted_at":         {Equals, GreaterThan, GreaterThanOrEquals, LessThan, LessThanOrEquals, NotEquals},
+		"total_files":        {Equals, GreaterThan, GreaterThanOrEquals, LessThan, LessThanOrEquals, NotEquals},
+		"failed_files":       {Equals, GreaterThan, GreaterThanOrEquals, LessThan, LessThanOrEquals, NotEquals},
 	}
 }
 
-func (s FileUploadJobs) IsString(column string) bool {
+func (s IngestJobs) IsString(column string) bool {
 	switch column {
 	case "status_message", "user_id", "user_email_address":
 		return true
@@ -84,7 +90,7 @@ func (s FileUploadJobs) IsString(column string) bool {
 	}
 }
 
-func (s FileUploadJobs) GetFilterableColumns() []string {
+func (s IngestJobs) GetFilterableColumns() []string {
 	var columns = make([]string, 0)
 	for column := range s.ValidFilters() {
 		columns = append(columns, column)
@@ -92,7 +98,7 @@ func (s FileUploadJobs) GetFilterableColumns() []string {
 	return columns
 }
 
-func (s FileUploadJobs) GetValidFilterPredicatesAsStrings(column string) ([]string, error) {
+func (s IngestJobs) GetValidFilterPredicatesAsStrings(column string) ([]string, error) {
 	if predicates, validColumn := s.ValidFilters()[column]; !validColumn {
 		return []string{}, fmt.Errorf("the specified column cannot be filtered")
 	} else {
@@ -191,25 +197,4 @@ func (s JobStatus) IsValidEndState() error {
 	default:
 		return fmt.Errorf("invalid job end state (%s|%s): %s", JobStatusComplete, JobStatusFailed, s)
 	}
-}
-
-type DomainCollectionResult struct {
-	JobID             int64  `json:"job_id"` // TODO remove this field to enable moving this model to FOSS
-	DomainName        string `json:"domain_name"`
-	Success           bool   `json:"success"`
-	Message           string `json:"message"`
-	UserCount         int    `json:"user_count"`
-	GroupCount        int    `json:"group_count"`
-	ComputerCount     int    `json:"computer_count"`
-	GPOCount          int    `json:"gpo_count"`
-	OUCount           int    `json:"ou_count"`
-	ContainerCount    int    `json:"container_count"`
-	AIACACount        int    `json:"aiaca_count" gorm:"column:aiaca_count"`
-	RootCACount       int    `json:"rootca_count" gorm:"column:rootca_count"`
-	EnterpriseCACount int    `json:"enterpriseca_count" gorm:"column:enterpriseca_count"`
-	NTAuthStoreCount  int    `json:"ntauthstore_count" gorm:"column:ntauthstore_count"`
-	CertTemplateCount int    `json:"certtemplate_count" gorm:"column:certtemplate_count"`
-	DeletedCount      int    `json:"deleted_count"`
-
-	BigSerial
 }

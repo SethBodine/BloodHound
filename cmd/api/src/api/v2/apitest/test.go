@@ -17,26 +17,33 @@
 package apitest
 
 import (
-	"log"
+	"fmt"
+	"log/slog"
+	"os"
 
-	"github.com/specterops/bloodhound/src/api/v2/auth"
-	authPkg "github.com/specterops/bloodhound/src/auth"
-	"github.com/specterops/bloodhound/src/config"
-	"github.com/specterops/bloodhound/src/database/mocks"
+	"github.com/specterops/bloodhound/cmd/api/src/api"
+	apimocks "github.com/specterops/bloodhound/cmd/api/src/api/mocks"
+	"github.com/specterops/bloodhound/cmd/api/src/api/v2/auth"
+	authPkg "github.com/specterops/bloodhound/cmd/api/src/auth"
+	"github.com/specterops/bloodhound/cmd/api/src/config"
+	"github.com/specterops/bloodhound/cmd/api/src/database/mocks"
+	mocks_graph "github.com/specterops/bloodhound/cmd/api/src/queries/mocks"
 	"go.uber.org/mock/gomock"
 )
 
-func NewAuthManagementResource(mockCtrl *gomock.Controller) (auth.ManagementResource, *mocks.MockDatabase) {
+func NewAuthManagementResource(mockCtrl *gomock.Controller) (auth.ManagementResource, *mocks.MockDatabase, *mocks_graph.MockGraph) {
 	cfg, err := config.NewDefaultConfiguration()
 	if err != nil {
-		log.Fatalf("Failed to create default configuration: %v", err)
+		slog.Error(fmt.Sprintf("Failed to create default configuration: %v", err))
+		os.Exit(1)
 	}
 
 	cfg.Crypto.Argon2.NumIterations = 1
 	cfg.Crypto.Argon2.NumThreads = 1
 
 	mockDB := mocks.NewMockDatabase(mockCtrl)
-	resources := auth.NewManagementResource(cfg, mockDB, authPkg.NewAuthorizer(mockDB))
+	mockGraphDB := mocks_graph.NewMockGraph(mockCtrl)
+	resources := auth.NewManagementResource(cfg, mockDB, authPkg.NewAuthorizer(mockDB), api.NewAuthenticator(cfg, mockDB, apimocks.NewMockAuthExtensions(mockCtrl)), mockGraphDB)
 
-	return resources, mockDB
+	return resources, mockDB, mockGraphDB
 }

@@ -14,16 +14,16 @@
 //
 // SPDX-License-Identifier: Apache-2.0
 
-import { render, screen } from '../../../test-utils';
 import { Table, TableBody } from '@mui/material';
 import LoadContainer from '.';
+import { render, screen } from '../../../test-utils';
 
 describe('LoadContainer', () => {
     it('should display locally formatted numbers if they are larger than 999', () => {
         render(
             <Table>
                 <TableBody>
-                    <LoadContainer icon='globe' display='Test' value={1000} />
+                    <LoadContainer icon={<>globe</>} display='Test' value={1000} loading={false} />
                 </TableBody>
             </Table>
         );

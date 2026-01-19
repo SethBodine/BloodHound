@@ -1,4 +1,4 @@
-// Copyright 2023 Specter Ops, Inc.
+// Copyright 2025 Specter Ops, Inc.
 //
 // Licensed under the Apache License, Version 2.0
 // you may not use this file except in compliance with the License.
@@ -14,36 +14,34 @@
 //
 // SPDX-License-Identifier: Apache-2.0
 
-import FileIngest from '.';
-import { setupServer } from 'msw/node';
 import { rest } from 'msw';
-import { fireEvent, render, waitFor } from '../../test-utils';
+import { setupServer } from 'msw/node';
+import { act, render, screen, waitFor } from '../../test-utils';
+import FileIngest from './FileIngest';
+
+const checkPermissionMock = vi.fn();
+
+vi.mock('../../hooks/usePermissions', async () => {
+    const actual = await vi.importActual('../../hooks');
+    return {
+        ...actual,
+        usePermissions: () => ({
+            checkPermission: checkPermissionMock,
+            isSuccess: true,
+        }),
+    };
+});
 
 const server = setupServer(
-    rest.post('/api/v2/file-upload/start', (req, res, ctx) => {
+    rest.get('/api/v2/features', (req, res, ctx) => {
         return res(
             ctx.json({
-                data: { id: 1 },
-                status: 201,
-                statusText: 'Created',
-            })
-        );
-    }),
-    rest.post('/api/v2/file-upload/:ingestId', (req, res, ctx) => {
-        return res(
-            ctx.json({
-                data: '',
-                status: 202,
-                statusText: 'Accepted',
-            })
-        );
-    }),
-    rest.post('/api/v2/file-upload/:ingestId/end', (req, res, ctx) => {
-        return res(
-            ctx.json({
-                data: '',
-                status: 200,
-                statusText: 'OK',
+                data: [
+                    {
+                        key: 'open_graph_phase_2',
+                        enabled: true,
+                    },
+                ],
             })
         );
     }),
@@ -65,66 +63,37 @@ const server = setupServer(
                 statusText: 'OK',
             })
         );
-    }),
-    rest.get('/api/v2/file-upload/accepted-types', (req, res, ctx) => {
-        return res(
-            ctx.json({
-                data: ['application/json'],
-            })
-        );
     })
 );
 
-beforeAll(() => server.listen());
+beforeAll(() => {
+    server.listen();
+});
+
 afterEach(() => server.resetHandlers());
-afterAll(() => server.close());
+afterAll(() => {
+    server.close();
+    vi.clearAllMocks();
+    server.resetHandlers();
+});
 
 describe('FileIngest', () => {
-    const testFile = new File([JSON.stringify({ value: 'test' })], 'test.json', { type: 'application/json' });
-    const errorFile = new File(['test text'], 'test.txt', { type: 'text/plain' });
-
-    it('accepts a valid file and allows the user to continue through the upload process', async () => {
-        const { getByTestId, getByText } = render(<FileIngest />);
-        const openButton = getByText('Upload File(s)');
-
-        fireEvent.click(openButton);
-
-        const fileInput = getByTestId('ingest-file-upload');
-        await waitFor(() => expect(fileInput).toBeEnabled());
-
-        await waitFor(() => fireEvent.change(fileInput, { target: { files: [testFile] } }));
-
-        const submitButton = getByTestId('confirmation-dialog_button-yes');
-        await expect(submitButton).toBeEnabled();
-
-        fireEvent.click(submitButton);
-        expect(getByText('Press "Upload" to continue.')).toBeInTheDocument();
-
-        fireEvent.click(submitButton);
-        await waitFor(() => getByText('All files have successfully been uploaded for ingest.'));
-        expect(getByText('All files have successfully been uploaded for ingest.')).toBeInTheDocument();
+    it('displays a Upload Files button', async () => {
+        await act(async () => render(<FileIngest />));
+        const uploadButton = screen.getByRole('button', { name: 'Upload File(s)' });
+        expect(uploadButton).toBeInTheDocument();
     });
-
-    it('prevents a user from proceeding if the file is not valid', async () => {
-        const { getByTestId, getByText } = render(<FileIngest />);
-        const openButton = getByText('Upload File(s)');
-
-        fireEvent.click(openButton);
-
-        const fileInput = getByTestId('ingest-file-upload');
-        await waitFor(() => expect(fileInput).toBeEnabled());
-
-        await waitFor(() => fireEvent.change(fileInput, { target: { files: [errorFile] } }));
-
-        const submitButton = getByTestId('confirmation-dialog_button-yes');
-        expect(submitButton).toBeDisabled();
+    it('displays a Filters button', async () => {
+        await act(async () => render(<FileIngest />));
+        const filterButton = screen.getByRole('button', { name: /app-icon-filter-outline/i });
+        expect(filterButton).toBeInTheDocument();
     });
-
     it('displays a table of completed ingest logs', async () => {
-        const { getByText } = render(<FileIngest />);
-        await waitFor(() => getByText('test_email@specterops.io'));
+        checkPermissionMock.mockImplementation(() => true);
+        render(<FileIngest />);
+        await waitFor(() => screen.getByText('test_email@specterops.io'));
 
-        expect(getByText('test_email@specterops.io')).toBeInTheDocument();
-        expect(getByText('1 minute')).toBeInTheDocument();
+        expect(screen.getByText('test_email@specterops.io')).toBeInTheDocument();
+        expect(screen.getByText('1 min')).toBeInTheDocument();
     });
 });

@@ -20,11 +20,12 @@ import (
 	"fmt"
 	"net/http"
 
-	adAnalysis "github.com/specterops/bloodhound/analysis/ad"
-	"github.com/specterops/bloodhound/dawgs/graph"
-	"github.com/specterops/bloodhound/graphschema/ad"
-	"github.com/specterops/bloodhound/graphschema/common"
-	"github.com/specterops/bloodhound/src/api"
+	"github.com/specterops/bloodhound/cmd/api/src/api"
+	adAnalysis "github.com/specterops/bloodhound/packages/go/analysis/ad"
+	"github.com/specterops/bloodhound/packages/go/analysis/tiering"
+	"github.com/specterops/bloodhound/packages/go/graphschema/ad"
+	"github.com/specterops/bloodhound/packages/go/graphschema/common"
+	"github.com/specterops/dawgs/graph"
 )
 
 type DomainPatchRequest struct {
@@ -63,7 +64,7 @@ func (s *Resources) PatchDomain(response http.ResponseWriter, request *http.Requ
 }
 
 func (s *Resources) handleAdEntityInfoQuery(response http.ResponseWriter, request *http.Request, entityType graph.Kind, countQueries map[string]any) {
-	if hydrateCounts, err := api.ParseOptionalBool(request.URL.Query().Get(api.QueryParameterHydrateCounts), true); err != nil {
+	if includeCounts, err := api.ParseOptionalBool(request.URL.Query().Get(api.QueryParameterIncludeCounts), true); err != nil {
 		api.WriteErrorResponse(request.Context(), api.BuildErrorResponse(http.StatusBadRequest, api.ErrorResponseDetailsBadQueryParameterFilters, request), response)
 	} else if objectId, err := GetEntityObjectIDFromRequestPath(request); err != nil {
 		api.WriteErrorResponse(request.Context(), api.BuildErrorResponse(http.StatusBadRequest, fmt.Sprintf("error reading objectid: %v", err), request), response)
@@ -73,11 +74,14 @@ func (s *Resources) handleAdEntityInfoQuery(response http.ResponseWriter, reques
 		} else {
 			api.WriteErrorResponse(request.Context(), api.BuildErrorResponse(http.StatusInternalServerError, fmt.Sprintf("error getting node: %v", err), request), response)
 		}
-	} else if hydrateCounts {
+	} else if includeCounts {
 		results := s.GraphQuery.GetEntityCountResults(request.Context(), node, countQueries)
 		api.WriteBasicResponse(request.Context(), results, http.StatusOK, response)
 	} else {
-		results := map[string]any{"props": node.Properties.Map}
+		if tiering.IsTierZero(node) {
+			node.Properties.Map["isTierZero"] = true
+		}
+		results := map[string]any{"props": node.Properties.Map, "kinds": node.Kinds.Strings()}
 		api.WriteBasicResponse(request.Context(), results, http.StatusOK, response)
 	}
 }
@@ -141,8 +145,9 @@ func (s *Resources) GetDomainEntityInfo(response http.ResponseWriter, request *h
 			"inboundTrusts":         adAnalysis.CreateDomainTrustListDelegate(graph.DirectionInbound),
 			"outboundTrusts":        adAnalysis.CreateDomainTrustListDelegate(graph.DirectionOutbound),
 			"controllers":           adAnalysis.FetchInboundADEntityControllers,
-			"linkedgpos":            adAnalysis.FetchEntityLinkedGPOList,
+			"linkedgpos":            adAnalysis.FetchEnforcedGPOs,
 			"dcsyncers":             adAnalysis.FetchDCSyncers,
+			"adcs-escalations":      adAnalysis.CreateADCSEscalationsListDelegate,
 		}
 	)
 
@@ -165,7 +170,8 @@ func (s *Resources) GetGPOEntityInfo(response http.ResponseWriter, request *http
 func (s *Resources) GetAIACAEntityInfo(response http.ResponseWriter, request *http.Request) {
 	var (
 		countQueries = map[string]any{
-			"controllers": adAnalysis.FetchInboundADEntityControllers,
+			"controllers":   adAnalysis.FetchInboundADEntityControllers,
+			"pki-hierarchy": adAnalysis.CreateCAPKIHierarchyListDelegate,
 		}
 	)
 
@@ -175,7 +181,8 @@ func (s *Resources) GetAIACAEntityInfo(response http.ResponseWriter, request *ht
 func (s *Resources) GetRootCAEntityInfo(response http.ResponseWriter, request *http.Request) {
 	var (
 		countQueries = map[string]any{
-			"controllers": adAnalysis.FetchInboundADEntityControllers,
+			"controllers":   adAnalysis.FetchInboundADEntityControllers,
+			"pki-hierarchy": adAnalysis.CreateRootCAPKIHierarchyListDelegate,
 		}
 	)
 
@@ -185,7 +192,9 @@ func (s *Resources) GetRootCAEntityInfo(response http.ResponseWriter, request *h
 func (s *Resources) GetEnterpriseCAEntityInfo(response http.ResponseWriter, request *http.Request) {
 	var (
 		countQueries = map[string]any{
-			"controllers": adAnalysis.FetchInboundADEntityControllers,
+			"controllers":         adAnalysis.FetchInboundADEntityControllers,
+			"pki-hierarchy":       adAnalysis.CreateCAPKIHierarchyListDelegate,
+			"published-templates": adAnalysis.CreatePublishedTemplatesListDelegate,
 		}
 	)
 	s.handleAdEntityInfoQuery(response, request, ad.EnterpriseCA, countQueries)
@@ -195,6 +204,7 @@ func (s *Resources) GetNTAuthStoreEntityInfo(response http.ResponseWriter, reque
 	var (
 		countQueries = map[string]any{
 			"controllers": adAnalysis.FetchInboundADEntityControllers,
+			"trusted-cas": adAnalysis.CreateTrustedCAsListDelegate,
 		}
 	)
 	s.handleAdEntityInfoQuery(response, request, ad.NTAuthStore, countQueries)
@@ -203,7 +213,8 @@ func (s *Resources) GetNTAuthStoreEntityInfo(response http.ResponseWriter, reque
 func (s *Resources) GetCertTemplateEntityInfo(response http.ResponseWriter, request *http.Request) {
 	var (
 		countQueries = map[string]any{
-			"controllers": adAnalysis.FetchInboundADEntityControllers,
+			"controllers":      adAnalysis.FetchInboundADEntityControllers,
+			"published-to-cas": adAnalysis.CreatePublishedToCAsListDelegate,
 		}
 	)
 
@@ -213,7 +224,7 @@ func (s *Resources) GetCertTemplateEntityInfo(response http.ResponseWriter, requ
 func (s *Resources) GetOUEntityInfo(response http.ResponseWriter, request *http.Request) {
 	var (
 		countQueries = map[string]any{
-			"gpos":      adAnalysis.FetchEntityLinkedGPOList,
+			"gpos":      adAnalysis.FetchEnforcedGPOs,
 			"users":     adAnalysis.CreateOUContainedListDelegate(ad.User),
 			"groups":    adAnalysis.CreateOUContainedListDelegate(ad.Group),
 			"computers": adAnalysis.CreateOUContainedListDelegate(ad.Computer),
@@ -259,4 +270,15 @@ func (s *Resources) GetGroupEntityInfo(response http.ResponseWriter, request *ht
 	)
 
 	s.handleAdEntityInfoQuery(response, request, ad.Group, countQueries)
+}
+
+func (s *Resources) GetIssuancePolicyEntityInfo(response http.ResponseWriter, request *http.Request) {
+	var (
+		countQueries = map[string]any{
+			"controllers":     adAnalysis.FetchInboundADEntityControllers,
+			"linkedTemplates": adAnalysis.FetchPolicyLinkedCertTemplates,
+		}
+	)
+
+	s.handleAdEntityInfoQuery(response, request, ad.IssuancePolicy, countQueries)
 }

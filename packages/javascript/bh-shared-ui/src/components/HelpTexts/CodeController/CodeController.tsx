@@ -14,44 +14,44 @@
 //
 // SPDX-License-Identifier: Apache-2.0
 
-import { Button, Typography } from '@mui/material';
-import { makeStyles } from '@mui/styles';
-import { PropsWithChildren, useMemo, useRef, useState } from 'react';
-import clsx from 'clsx';
-import { FontAwesomeIcon } from '@fortawesome/react-fontawesome';
+import { Button } from '@bloodhoundenterprise/doodleui';
 import { faAlignJustify, faCopy } from '@fortawesome/free-solid-svg-icons';
+import { FontAwesomeIcon } from '@fortawesome/react-fontawesome';
+import { Theme, Typography } from '@mui/material';
+import { makeStyles } from '@mui/styles';
+import clsx from 'clsx';
+import { PropsWithChildren, useMemo, useRef, useState } from 'react';
 import { copyToClipboard } from '../../../utils/copyToClipboard';
 
-export const useStyles = makeStyles((theme) => ({
+export const useStyles = makeStyles((theme: Theme) => ({
     codeController: {
         position: 'relative',
         '& .code': {
             'white-space': 'pre',
-            overflow: 'scroll',
+            'overflow-x': 'scroll',
         },
         '& .wrapped': {
             'white-space': 'pre-line',
-        },
-        '& .scrollLeft': {
-            'box-shadow': 'inset -5px 0px 5px black;',
-        },
-        '& .scrollRight': {
-            'box-shadow': 'inset 5px 0px 5px black;',
-        },
-        '& .scrollRight.scrollLeft': {
-            'box-shadow': 'inset 5px 0px 5px 0px black, inset -5px 0px 5px 0px black',
         },
         '& .codeController': {
             display: 'flex',
             justifyContent: 'flex-end',
             position: 'absolute',
             right: '0',
-            borderBottom: '1px solid white',
+            borderBottom: `1px solid ${theme.palette.color.primary}`,
             width: '100%',
 
             '& button': {
-                color: 'white',
+                color: theme.palette.color.primary,
                 transition: 'opacity 100ms ease-in-out',
+                boxShadow: 'none',
+                fontSize: theme.typography.body1,
+                padding: theme.spacing(0.5, 1),
+                height: 'fit-content',
+
+                '&:last-of-type': {
+                    marginRight: '20px',
+                },
             },
         },
     },
@@ -87,13 +87,19 @@ function CodeController(props: PropsWithChildren<Props>) {
         setScrollRight(scrollLeft > 0);
     };
 
-    // Trims off tab spacing at the beginning and end of new lines
     const justifiedLeft = useMemo(() => {
         const perLine = (children?.toString() ?? '').split('\n');
         const nextNonBlankLine = perLine.find((x, i) => i !== 0 && !!x.trim());
+        const leftIndentationIndex = nextNonBlankLine?.split('').findIndex((x) => !!x.trim());
 
-        const startingIndex = nextNonBlankLine?.split('').findIndex((x) => !!x.trim());
-        return perLine?.map((x) => x.slice(startingIndex)).join('\n');
+        return perLine
+            ?.map((line, i) => {
+                if (i === 0) return line;
+                const leftIndentation = line.slice(0, leftIndentationIndex).trim();
+                const content = line.slice(leftIndentationIndex);
+                return leftIndentation + content;
+            })
+            .join('\n');
     }, [children]);
 
     const handleCopy = async () => {
@@ -128,19 +134,17 @@ function CodeController(props: PropsWithChildren<Props>) {
                     <>
                         <div className='codeController'>
                             {!hideCopy && (
-                                <Button sx={{ p: 0.5, m: 0, fontSize: '12px' }} onClick={handleCopy}>
+                                <Button variant='text' onClick={handleCopy}>
                                     <FontAwesomeIcon icon={faCopy} />
-                                    <Typography component='span' sx={{ marginLeft: '6px' }}>
+                                    <Typography component='span' className='ml-[6px]'>
                                         {copied ? 'Copied' : 'Copy'}
                                     </Typography>
                                 </Button>
                             )}
                             {!hideWrap && (
-                                <Button
-                                    sx={{ p: 0.5, m: 0, marginRight: '20px', fontSize: '12px' }}
-                                    onClick={handleWrap}>
+                                <Button variant='text' onClick={handleWrap}>
                                     <FontAwesomeIcon icon={faAlignJustify} />
-                                    <Typography component='span' sx={{ marginLeft: '6px' }}>
+                                    <Typography component='span' className='ml-[6px]'>
                                         {wrapped ? 'Unwrap' : 'Wrap'}
                                     </Typography>
                                 </Button>

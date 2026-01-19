@@ -14,15 +14,14 @@
 //
 // SPDX-License-Identifier: Apache-2.0
 
-import { FC } from 'react';
-import { useHelpTextStyles, groupSpecialFormat } from '../utils';
-import { EdgeInfoProps } from '../index';
 import { Typography } from '@mui/material';
+import { FC } from 'react';
+import { EdgeInfoProps } from '../index';
+import { groupSpecialFormat, hasChildCodeElementsClasses } from '../utils';
 
-const General: FC<EdgeInfoProps> = ({ sourceName, sourceType, targetName }) => {
-    const classes = useHelpTextStyles();
+const General: FC<EdgeInfoProps> = ({ sourceName, sourceType }) => {
     return (
-        <Typography variant='body2' className={classes.containsCodeEl}>
+        <Typography variant='body2' className={hasChildCodeElementsClasses}>
             {groupSpecialFormat(sourceType, sourceName)} has the privileges to perform the ADCS ESC10 Scenario A attack
             against the target domain.
             <br />

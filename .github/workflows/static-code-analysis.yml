@@ -1,4 +1,4 @@
-# Copyright 2024 Specter Ops, Inc.
+# Copyright 2025 Specter Ops, Inc.
 #
 # Licensed under the Apache License, Version 2.0
 # you may not use this file except in compliance with the License.
@@ -17,34 +17,42 @@
 name: Static Code Analysis
 
 on:
-  push:
-    branches: [main]
   pull_request:
-    types: [opened, synchronize]
+    branches:
+      - main
+      - "stage/**"
+    types:
+      - opened
+      - synchronize
 
-    
 jobs:
   run-analysis:
     runs-on: ubuntu-latest
 
     steps:
-    - name: Checkout source code for this repository
-      uses: actions/checkout@v3
+      - name: Checkout source code for this repository
+        uses: actions/checkout@v4
 
-    - name: Install Go
-      uses: actions/setup-go@v4
-      with:
-        go-version: '^1.21.0'
+      - name: Install Go
+        uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+          cache: true
+          check-latest: true
 
-    - name: Install Node
-      uses: actions/setup-node@v4
-      with:
-        node-version: 18
+      - name: Install Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: 22
 
-    - name: Install Yarn
-      run: |
-        npm install --global yarn
+      - name: Install Yarn
+        run: |
+          npm install --global yarn
 
-    - name: Run Analysis
-      run: |
-        go run github.com/specterops/bloodhound/packages/go/stbernard analysis
+      - name: Install Deps
+        run: |
+          go tool stbernard deps
+
+      - name: Run Analysis
+        run: |
+          go tool stbernard analysis

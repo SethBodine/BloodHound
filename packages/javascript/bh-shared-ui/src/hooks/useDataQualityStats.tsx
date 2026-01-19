@@ -14,69 +14,9 @@
 //
 // SPDX-License-Identifier: Apache-2.0
 
-import { useQuery } from 'react-query';
 import { DateTime } from 'luxon';
+import { useQuery } from 'react-query';
 import { apiClient } from '../utils/api';
-
-export type Domain = {
-    type: string;
-    impactValue: number;
-    name: string;
-    id: string;
-    collected: boolean;
-};
-
-export type ActiveDirectoryQualityStat = {
-    groups: number;
-    ous: number;
-    gpos: number;
-    aiacas: number;
-    rootcas: number;
-    enterprisecas: number;
-    ntauthstores: number;
-    certtemplates: number;
-    acls: number;
-    relationships: number;
-    users: number;
-    containers?: number;
-    computers: number;
-    domains?: number;
-    sessions: number;
-    local_group_completeness: number;
-    session_completeness: number;
-    created_at: string;
-};
-
-export type ActiveDirectoryDataQualityResponse = {
-    start: string;
-    end: string;
-    limit: number;
-    data: ActiveDirectoryQualityStat[];
-};
-
-export type AzureDataQualityStat = {
-    tenantid: string;
-    users: number;
-    groups: number;
-    apps: number;
-    service_principals: number;
-    devices: number;
-    management_groups: number;
-    subscriptions: number;
-    tenants?: number;
-    resource_groups: number;
-    vms: number;
-    key_vaults: number;
-    relationships: number;
-    run_id: string;
-};
-
-export type AzureDataQualityResponse = {
-    start: string;
-    end: string;
-    limit: number;
-    data: AzureDataQualityStat[];
-};
 
 const now = DateTime.now();
 
@@ -86,7 +26,7 @@ export const useActiveDirectoryDataQualityHistoryQuery = (id: string) => {
             .getADQualityStats(id, now.minus({ days: 30 }).toJSDate(), now.toJSDate(), undefined, undefined, { signal })
             .then((response) => {
                 if (!response.data) throw new Error('Unable to retrieve AD quality history');
-                return response.data as ActiveDirectoryDataQualityResponse;
+                return response.data;
             });
     });
 };
@@ -95,7 +35,7 @@ export const useActiveDirectoryDataQualityStatsQuery = (id: string) => {
     return useQuery(['active-directory-data-quality-stats', id], ({ signal }) => {
         return apiClient.getADQualityStats(id, undefined, undefined, 1, undefined, { signal }).then((response) => {
             if (!response.data) throw new Error('Unable to retrieve AD quality stats');
-            return response.data as ActiveDirectoryDataQualityResponse;
+            return response.data;
         });
     });
 };
@@ -108,7 +48,7 @@ export const useAzureDataQualityHistoryQuery = (id: string) => {
             })
             .then((response) => {
                 if (!response.data) throw new Error('Unable to retrieve Azure quality history');
-                return response.data as AzureDataQualityResponse;
+                return response.data;
             });
     });
 };
@@ -117,7 +57,7 @@ export const useAzureDataQualityStatsQuery = (id: string) => {
     return useQuery(['azure-data-quality-stats', id], ({ signal }) => {
         return apiClient.getAzureQualityStats(id, undefined, undefined, 1, undefined, { signal }).then((response) => {
             if (!response.data) throw new Error('Unable to retrieve Azure quality stats');
-            return response.data as AzureDataQualityResponse;
+            return response.data;
         });
     });
 };
@@ -130,7 +70,7 @@ export const useActiveDirectoryPlatformsDataQualityHistoryQuery = () => {
             })
             .then((response) => {
                 if (!response.data) throw new Error('Unable to retrieve AD platform quality history');
-                return response.data as ActiveDirectoryDataQualityResponse;
+                return response.data;
             })
     );
 };
@@ -139,7 +79,7 @@ export const useActiveDirectoryPlatformsDataQualityStatsQuery = () => {
     return useQuery('active-directory-platform-data-quality-stats', ({ signal }) =>
         apiClient.getPlatformQualityStats('ad', undefined, undefined, 1, undefined, { signal }).then((response) => {
             if (!response.data) throw new Error('Unable to retrieve AD platform quality stats');
-            return response.data as ActiveDirectoryDataQualityResponse;
+            return response.data;
         })
     );
 };
@@ -157,7 +97,7 @@ export const useAzurePlatformsDataQualityHistoryQuery = () => {
             )
             .then((response) => {
                 if (!response.data) throw new Error('Unable to retrieve Azure platform quality history');
-                return response.data as AzureDataQualityResponse;
+                return response.data;
             })
     );
 };
@@ -166,7 +106,7 @@ export const useAzurePlatformsDataQualityStatsQuery = () => {
     return useQuery('azure-platform-data-quality-stats', ({ signal }) =>
         apiClient.getPlatformQualityStats('azure', undefined, undefined, 1, undefined, { signal }).then((response) => {
             if (!response.data) throw new Error('Unable to retrieve Azure platform quality stats');
-            return response.data as AzureDataQualityResponse;
+            return response.data;
         })
     );
 };

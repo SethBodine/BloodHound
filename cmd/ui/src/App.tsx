@@ -13,47 +13,81 @@
 // limitations under the License.
 //
 // SPDX-License-Identifier: Apache-2.0
-
-import { Box } from '@mui/material';
-import makeStyles from '@mui/styles/makeStyles';
+import { CssBaseline, ThemeProvider, useMediaQuery } from '@mui/material';
+import { createTheme } from '@mui/material/styles';
+import {
+    AppNotifications,
+    GenericErrorBoundaryFallback,
+    MainNav,
+    MainNavData,
+    NotificationsProvider,
+    components,
+    darkPalette,
+    lightPalette,
+    setRootClass,
+    typography,
+    useFeatureFlags,
+    useKeybindings,
+    useShowNavBar,
+    useStyles,
+} from 'bh-shared-ui';
+import { createBrowserHistory } from 'history';
 import React, { useEffect } from 'react';
-import { useQueryClient } from 'react-query';
-import { useLocation } from 'react-router-dom';
-import { AppNotifications } from 'bh-shared-ui';
-import Notifier from 'src/components/Notifier';
-import { initialize } from 'src/ducks/auth/authSlice';
-import { ROUTE_EXPIRED_PASSWORD, ROUTE_LOGIN, ROUTE_USER_DISABLED } from 'src/ducks/global/routes';
-import { featureFlagKeys, getFeatureFlags } from 'src/hooks/useFeatureFlags';
+import { ErrorBoundary } from 'react-error-boundary';
+import { Helmet } from 'react-helmet';
+import { unstable_HistoryRouter as BrowserRouter } from 'react-router-dom';
+import { fullyAuthenticatedSelector, initialize } from 'src/ducks/auth/authSlice';
+import { PRIVILEGE_ZONES_ROUTE, ROUTES } from 'src/routes';
 import { useAppDispatch, useAppSelector } from 'src/store';
 import { initializeBHEClient } from 'src/utils';
 import Content from 'src/views/Content';
-import Header from 'src/components/Header';
+import {
+    useMainNavLogoData,
+    useMainNavPrimaryListData,
+    useMainNavSecondaryListData,
+} from './components/MainNav/MainNavData';
+import Notifier from './components/Notifier';
+import { setDarkMode } from './ducks/global/actions';
+import DialogProviders from './views/Explore/DialogProviders';
 
-const useStyles = makeStyles((theme) => ({
-    applicationContainer: {
-        display: 'flex',
-        position: 'relative',
-        flexDirection: 'column',
-        height: '100%',
-        overflow: 'hidden',
-    },
-    applicationHeader: {
-        flexGrow: 0,
-        zIndex: theme.zIndex.drawer + 1,
-    },
-    applicationContent: {
-        flexGrow: 1,
-        overflowY: 'auto',
-        overflowX: 'hidden',
-    },
-}));
+// Create history object for unstable_HistoryRouter
+// Type assertion is needed due to incompatibility between history v5 and react-router-dom v6's internal history types
+// React Router team has explicitly deprecated custom history support and does not intend to support it in future versions.
+// We should migrate from unstable_HistoryRouter to the regular BrowserRouter
+const history = createBrowserHistory() as any;
 
-const App: React.FC = () => {
+export const Inner: React.FC = () => {
     const classes = useStyles();
-    const authState = useAppSelector((state) => state.auth);
-    const queryClient = useQueryClient();
+
     const dispatch = useAppDispatch();
-    const location = useLocation();
+    const authState = useAppSelector((state) => state.auth);
+    const fullyAuthenticated = useAppSelector(fullyAuthenticatedSelector);
+    const darkMode = useAppSelector((state) => state.global.view.darkMode);
+
+    const isOSDarkTheme = useMediaQuery('(prefers-color-scheme: dark)');
+
+    const featureFlagsRes = useFeatureFlags({
+        retry: false,
+        enabled: !!(authState.isInitialized && fullyAuthenticated),
+    });
+
+    const mainNavData: MainNavData = {
+        logo: useMainNavLogoData(),
+        primaryList: useMainNavPrimaryListData(),
+        secondaryList: useMainNavSecondaryListData(),
+    };
+    const showNavBar = useShowNavBar([...ROUTES, PRIVILEGE_ZONES_ROUTE]);
+
+    // remove dark_mode if feature flag is disabled
+    useEffect(() => {
+        // TODO: Consider adding more flexibility/composability to side effects for toggling feature flags on and off
+        if (!featureFlagsRes.data) return;
+        const darkModeFeatureFlag = featureFlagsRes.data.find((flag) => flag.key === 'dark_mode');
+
+        if (!darkModeFeatureFlag?.enabled) {
+            dispatch(setDarkMode(false));
+        }
+    }, [dispatch, featureFlagsRes.data, darkMode]);
 
     // initialize authentication state and BHE client request/response handlers
     useEffect(() => {
@@ -63,33 +97,74 @@ const App: React.FC = () => {
         }
     }, [dispatch, authState.isInitialized]);
 
-    // prefetch feature flags
-    useEffect(() => {
-        queryClient.prefetchQuery(featureFlagKeys.all, getFeatureFlags);
-    }, [queryClient]);
+    useKeybindings({
+        KeyD: () => {
+            window.open('https://bloodhound.specterops.io/home', '_blank');
+        },
+    });
 
     // block rendering until authentication initialization is complete
     if (!authState.isInitialized) {
         return null;
     }
 
-    const showHeader = !['', '/', ROUTE_LOGIN, ROUTE_EXPIRED_PASSWORD, ROUTE_USER_DISABLED].includes(location.pathname);
-
     return (
         <>
-            <Box className={classes.applicationContainer}>
-                {showHeader && (
-                    <Box className={classes.applicationHeader}>
-                        <Header />
-                    </Box>
-                )}
-                <Box className={classes.applicationContent}>
+            <Helmet>
+                {
+                    // dynamically set themed favicon by os/browser theme
+                    // Why is this needed and the favicon definition in index.html?
+                    // The helmet supports firefox, and index.html ensures a favicon is initially loaded when the tab first renders with the title.
+                    isOSDarkTheme ? (
+                        <link rel='shortcut icon' href='/ui/favicon-dark.ico' />
+                    ) : (
+                        <link rel='shortcut icon' href='/ui/favicon-light.ico' />
+                    )
+                }
+            </Helmet>
+            <div className={`${classes.applicationContainer}`} id='app-root'>
+                {showNavBar && <MainNav mainNavData={mainNavData} />}
+                <div className='bg-neutral-1 grow overflow-y-auto overflow-x-hidden'>
                     <Content />
-                </Box>
+                </div>
                 <AppNotifications />
                 <Notifier />
-            </Box>
+            </div>
         </>
+    );
+};
+
+const App: React.FC = () => {
+    const darkModeEnabled = useAppSelector((state) => state.global.view.darkMode);
+    const currentMode = setRootClass(darkModeEnabled ? 'dark' : 'light');
+
+    const palette = darkModeEnabled ? darkPalette : lightPalette;
+
+    let theme = createTheme({
+        palette: {
+            mode: currentMode,
+            ...palette,
+        },
+        typography,
+    });
+    // suggested by MUI for defining theme options based on other options. https://mui.com/material-ui/customization/theming/#api
+    theme = createTheme(theme, {
+        components: components(theme),
+    });
+
+    return (
+        <ThemeProvider theme={theme}>
+            <CssBaseline />
+            <BrowserRouter basename='/ui' history={history}>
+                <NotificationsProvider>
+                    <DialogProviders>
+                        <ErrorBoundary fallbackRender={GenericErrorBoundaryFallback}>
+                            <Inner />
+                        </ErrorBoundary>
+                    </DialogProviders>
+                </NotificationsProvider>
+            </BrowserRouter>
+        </ThemeProvider>
     );
 };
 

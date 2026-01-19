@@ -21,23 +21,25 @@ import (
 	"fmt"
 	"log"
 
-	"github.com/specterops/bloodhound/src/auth"
+	"github.com/specterops/bloodhound/cmd/api/src/config"
 
-	"github.com/specterops/bloodhound/lab"
-	"github.com/specterops/bloodhound/src/bootstrap"
-	"github.com/specterops/bloodhound/src/database"
-	"github.com/specterops/bloodhound/src/test/integration"
+	"github.com/specterops/bloodhound/cmd/api/src/auth"
+
+	"github.com/specterops/bloodhound/cmd/api/src/bootstrap"
+	"github.com/specterops/bloodhound/cmd/api/src/database"
+	"github.com/specterops/bloodhound/cmd/api/src/test/integration"
+	"github.com/specterops/bloodhound/packages/go/lab"
 )
 
 var PostgresFixture = lab.NewFixture(func(harness *lab.Harness) (*database.BloodhoundDB, error) {
 	testCtx := context.Background()
-	if config, ok := lab.Unpack(harness, ConfigFixture); !ok {
+	if labConfig, ok := lab.Unpack(harness, ConfigFixture); !ok {
 		return nil, fmt.Errorf("unable to unpack ConfigFixture")
-	} else if pgdb, err := database.OpenDatabase(config.Database.PostgreSQLConnectionString()); err != nil {
+	} else if pgdb, err := database.OpenDatabase(labConfig.Database.PostgreSQLConnectionString()); err != nil {
 		return nil, err
 	} else if err := integration.Prepare(testCtx, database.NewBloodhoundDB(pgdb, auth.NewIdentityResolver())); err != nil {
 		return nil, fmt.Errorf("failed ensuring database: %v", err)
-	} else if err := bootstrap.MigrateDB(testCtx, config, database.NewBloodhoundDB(pgdb, auth.NewIdentityResolver())); err != nil {
+	} else if err := bootstrap.MigrateDB(testCtx, labConfig, database.NewBloodhoundDB(pgdb, auth.NewIdentityResolver()), config.NewDefaultAdminConfiguration); err != nil {
 		return nil, fmt.Errorf("failed migrating database: %v", err)
 	} else {
 		return database.NewBloodhoundDB(pgdb, auth.NewIdentityResolver()), nil

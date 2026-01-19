@@ -20,17 +20,19 @@ import (
 	"context"
 	"flag"
 	"fmt"
-	"github.com/specterops/bloodhound/dawgs/graph"
-	"github.com/specterops/bloodhound/log"
-	"github.com/specterops/bloodhound/src/bootstrap"
-	"github.com/specterops/bloodhound/src/config"
-	"github.com/specterops/bloodhound/src/database"
-	"github.com/specterops/bloodhound/src/services"
-	"github.com/specterops/bloodhound/src/version"
+	"io"
+	"log/slog"
 	"os"
 
-	// This import is required by swaggo
-	_ "github.com/specterops/bloodhound/src/docs"
+	"github.com/specterops/bloodhound/cmd/api/src/bootstrap"
+	"github.com/specterops/bloodhound/cmd/api/src/config"
+	"github.com/specterops/bloodhound/cmd/api/src/database"
+	"github.com/specterops/bloodhound/cmd/api/src/services"
+	"github.com/specterops/bloodhound/cmd/api/src/version"
+	"github.com/specterops/bloodhound/packages/go/bhlog"
+	"github.com/specterops/bloodhound/packages/go/bhlog/attr"
+	"github.com/specterops/bloodhound/packages/go/bhlog/level"
+	"github.com/specterops/dawgs/graph"
 )
 
 func printVersion() {
@@ -41,9 +43,14 @@ func printVersion() {
 func main() {
 	var (
 		configFilePath string
-		logFilePath    string
 		versionFlag    bool
 	)
+
+	// Eagerly set logging format if valid environment variable is set
+	bhlog.ConfigureDefaultJSON(os.Stdout)
+	if config.GetTextLoggerEnabled() {
+		bhlog.ConfigureDefaultText(os.Stdout)
+	}
 
 	flag.Usage = func() {
 		fmt.Fprintf(flag.CommandLine.Output(), "BloodHound Community Edition API Server\n\nUsage of %s\n", os.Args[0])
@@ -52,27 +59,67 @@ func main() {
 
 	flag.BoolVar(&versionFlag, "version", false, "Get binary version.")
 	flag.StringVar(&configFilePath, "configfile", bootstrap.DefaultConfigFilePath(), "Configuration file to load.")
-	flag.StringVar(&logFilePath, "logfile", config.DefaultLogFilePath, "Log file to write to.")
 	flag.Parse()
 
 	if versionFlag {
 		printVersion()
 	}
 
-	// Initialize basic logging facilities while we start up
-	log.ConfigureDefaults()
+	cfg, err := config.GetConfiguration(configFilePath, config.NewDefaultConfiguration)
+	if err != nil {
+		slog.Error(fmt.Sprintf("Unable to read configuration %s: %v", configFilePath, err))
+		os.Exit(1)
+	}
 
-	if cfg, err := config.GetConfiguration(configFilePath, config.NewDefaultConfiguration); err != nil {
-		log.Fatalf("Unable to read configuration %s: %v", configFilePath, err)
+	// Initialize logging
+	var (
+		logFile *os.File
+
+		logLevel            = slog.LevelInfo
+		logWriter io.Writer = os.Stdout
+	)
+
+	if cfg.LogPath != "" {
+		logFile, err = os.OpenFile(cfg.LogPath, os.O_WRONLY|os.O_CREATE|os.O_APPEND, 0666)
+		if err != nil {
+			slog.Error(
+				"Failed to configure logging to file",
+				slog.String("path", cfg.LogPath),
+				attr.Error(err),
+			)
+		} else {
+			defer logFile.Close()
+			slog.Info("Additionally logging to file", slog.String("log_file", cfg.LogPath))
+			logWriter = io.MultiWriter(logWriter, logFile)
+		}
+	}
+
+	if cfg.LogLevel != "" {
+		if parsedLevel, err := bhlog.ParseLevel(cfg.LogLevel); err != nil {
+			slog.Warn("Configured log level is invalid. Ignoring.", slog.String("requested_log_level", cfg.LogLevel))
+		} else {
+			logLevel = parsedLevel
+		}
+	}
+
+	if cfg.EnableTextLogger {
+		bhlog.ConfigureDefaultText(logWriter)
 	} else {
-		initializer := bootstrap.Initializer[*database.BloodhoundDB, *graph.DatabaseSwitch]{
-			Configuration: cfg,
-			DBConnector:   services.ConnectDatabases,
-			Entrypoint:    services.Entrypoint,
-		}
+		bhlog.ConfigureDefaultJSON(logWriter)
+	}
 
-		if err := initializer.Launch(context.Background(), true); err != nil {
-			log.Fatalf("Failed starting the server: %v", err)
-		}
+	level.SetGlobalLevel(logLevel)
+	slog.Info("Logging configured", slog.String("log_level", logLevel.String()))
+
+	initializer := bootstrap.Initializer[*database.BloodhoundDB, *graph.DatabaseSwitch]{
+		Configuration:       cfg,
+		DBConnector:         services.ConnectDatabases,
+		PreMigrationDaemons: services.PreMigrationDaemons,
+		Entrypoint:          services.Entrypoint,
+	}
+
+	if err := initializer.Launch(context.Background(), true); err != nil {
+		slog.Error(fmt.Sprintf("Failed starting the server: %v", err))
+		os.Exit(1)
 	}
 }

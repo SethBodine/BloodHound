@@ -1,4 +1,4 @@
-// Copyright 2023 Specter Ops, Inc.
+// Copyright 2026 Specter Ops, Inc.
 //
 // Licensed under the Apache License, Version 2.0
 // you may not use this file except in compliance with the License.
@@ -14,14 +14,37 @@
 //
 // SPDX-License-Identifier: Apache-2.0
 
-export type BasicResponse<T> = {
-    data: T;
-};
+import type { AxiosResponse } from 'axios';
+import { EnvironmentRequest } from './requests';
+import {
+    AssetGroupTag,
+    AssetGroupTagCertificationRecord,
+    AssetGroupTagHistoryRecord,
+    AssetGroupTagMember,
+    AssetGroupTagSelector,
+    Client,
+    CollectorManifest,
+    CommunityCollectorType,
+    CustomNodeKindType,
+    EnterpriseCollectorType,
+    FileIngestCompletedTask,
+    FileIngestJob,
+    GraphData,
+    NodeSourceTypes,
+    Role,
+    ScheduledJobDisplay,
+    TimestampFields,
+} from './types';
+import { ConfigurationPayload } from './utils/config';
 
-export type TimeWindowedResponse<T> = BasicResponse<T> & {
+export interface BasicResponse<T> {
+    data: T;
+}
+
+export interface TimeWindowedResponse<T> extends BasicResponse<T> {
     start: string;
     end: string;
-};
+}
 
 export type PaginatedResponse<T> = Partial<TimeWindowedResponse<T>> &
     Required<BasicResponse<T>> & {
@@ -30,14 +53,82 @@ export type PaginatedResponse<T> = Partial<TimeWindowedResponse<T>> &
         skip: number;
     };
 
-type TimestampFields = {
-    created_at: string;
-    updated_at: string;
-    deleted_at: {
-        Time: string;
-        Valid: boolean;
-    };
+export type EnvironmentExposure = {
+    exposure_percent: number;
+    asset_group_tag: AssetGroupTag;
 };
+
+export const knownEnvironmentTypes = ['active-directory', 'azure'] as const;
+
+export type KnownEnvironmentType = (typeof knownEnvironmentTypes)[number];
+
+export const isKnownEnvironmentType = (type?: string): type is KnownEnvironmentType => {
+    return knownEnvironmentTypes.includes(type as KnownEnvironmentType);
+};
+
+export type Environment = {
+    // `string & {}` is a hack to make this a string literal type that can be widened to string if needed
+    // Needed because environment types can be provided by the user
+    // eslint-disable-next-line @typescript-eslint/ban-types
+    type: KnownEnvironmentType | (string & {});
+    impactValue: number;
+    name: string;
+    id: string;
+    collected: boolean;
+    hygiene_attack_paths: number; // While improbable this number could possibly be higher than the JavaScript max safe integer in the response
+    exposures: EnvironmentExposure[];
+};
+
+export type GraphResponse = BasicResponse<GraphData>;
+
+export type ActiveDirectoryQualityStat = TimestampFields & {
+    users: number;
+    computers: number;
+    groups: number;
+    ous: number;
+    gpos: number;
+    aiacas: number;
+    rootcas: number;
+    enterprisecas: number;
+    ntauthstores: number;
+    certtemplates: number;
+    issuancepolicies: number;
+    acls: number;
+    relationships: number;
+    sessions: number;
+    local_group_completeness: number;
+    session_completeness: number;
+    containers?: number;
+    domains?: number;
+};
+
+export type ActiveDirectoryDataQualityResponse = PaginatedResponse<ActiveDirectoryQualityStat[]>;
+
+export type AzureDataQualityStat = TimestampFields & {
+    run_id: string;
+    relationships: number;
+    users: number;
+    groups: number;
+    apps: number;
+    service_principals: number;
+    devices: number;
+    management_groups: number;
+    subscriptions: number;
+    resource_groups: number;
+    vms: number;
+    key_vaults: number;
+    automation_accounts: number;
+    container_registries: number;
+    function_apps: number;
+    logic_apps: number;
+    managed_clusters: number;
+    vm_scale_sets: number;
+    web_apps: number;
+    tenants?: number;
+    tenantid?: string;
+};
+
+export type AzureDataQualityResponse = PaginatedResponse<AzureDataQualityStat[]>;
 
 type PostureStat = TimestampFields & {
     domain_sid: string;
@@ -48,6 +139,41 @@ type PostureStat = TimestampFields & {
 };
 
 export type PostureResponse = PaginatedResponse<PostureStat[]>;
+
+type PostureFindingTrend = {
+    environment_id: string;
+    finding: string;
+    finding_count_start: number;
+    finding_count_end: number;
+    finding_count_increase: number;
+    finding_count_decrease: number;
+    composite_risk: number;
+    display_title: string;
+    display_type: string;
+};
+
+export type PostureFindingTrendsResponse = TimeWindowedResponse<{
+    findings: PostureFindingTrend[];
+    total_finding_count_start: number;
+    total_finding_count_end: number;
+}>;
+
+export type PostureHistoryData = {
+    date: string;
+    value: number;
+};
+
+export type PostureHistoryResponse = TimeWindowedResponse<PostureHistoryData[]> & {
+    data_type: string;
+};
+
+type DatapipeStatus = {
+    status: 'idle' | 'ingesting' | 'analyzing' | 'purging';
+    last_complete_analysis_at: string;
+    updated_at: string;
+};
+
+export type DatapipeStatusResponse = BasicResponse<DatapipeStatus>;
 
 export type AuthToken = TimestampFields & {
     hmac_method: string;
@@ -64,6 +190,35 @@ export type NewAuthToken = AuthToken & {
 };
 
 export type CreateAuthTokenResponse = BasicResponse<NewAuthToken>;
+
+export type AssetGroupTagsHistory = PaginatedResponse<{ records: AssetGroupTagHistoryRecord[] }>;
+
+export type PreviewSelectorsResponse = BasicResponse<{ members: AssetGroupTagMember[] }>;
+export type AssetGroupTagsCertification = PaginatedResponse<{ members: AssetGroupTagCertificationRecord[] }>;
+
+export interface AssetGroupTagMemberListItem extends AssetGroupTagMember {
+    source: NodeSourceTypes;
+}
+
+export interface AssetGroupTagMemberInfo extends AssetGroupTagMember {
+    properties: Record<string, any>;
+    selectors: AssetGroupTagSelector[];
+}
+
+export type AssetGroupTagSearchResponse = BasicResponse<{
+    tags: AssetGroupTag[];
+    selectors: AssetGroupTagSelector[];
+    members: AssetGroupTagMember[];
+}>;
+
+export type AssetGroupTagResponse = BasicResponse<{ tag: AssetGroupTag }>;
+export type AssetGroupTagsResponse = BasicResponse<{ tags: AssetGroupTag[] }>;
+export type AssetGroupTagSelectorResponse = BasicResponse<{ selector: AssetGroupTagSelector }>;
+export type AssetGroupTagSelectorsResponse = PaginatedResponse<{ selectors: AssetGroupTagSelector[] }>;
+export type AssetGroupTagMembersResponse = PaginatedResponse<{ members: AssetGroupTagMemberListItem[] }>;
+export type AssetGroupTagMemberInfoResponse = BasicResponse<{
+    member: AssetGroupTagMemberInfo;
+}>;
 
 export type AssetGroupSelector = TimestampFields & {
     id: number;
@@ -107,19 +262,15 @@ export type AssetGroupMemberCountsResponse = BasicResponse<AssetGroupMemberCount
 export type SavedQuery = {
     id: number;
     name: string;
+    description: string;
     query: string;
     user_id: string;
 };
 
-export type FileIngestJob = TimestampFields & {
-    user_id: string;
-    user_email_address: string;
-    status: number;
-    status_message: string;
-    start_time: string;
-    end_time: string;
-    last_ingest: string;
-    id: number;
+export type SavedQueryPermissionsResponse = {
+    shared_to_user_ids: string[];
+    query_id: number | undefined;
+    public: boolean;
 };
 
 export type ListFileIngestJobsResponse = PaginatedResponse<FileIngestJob[]>;
@@ -130,4 +281,64 @@ export type StartFileIngestResponse = BasicResponse<FileIngestJob>;
 
 export type UploadFileToIngestResponse = null;
 
+export type FileIngestCompletedTasksResponse = BasicResponse<FileIngestCompletedTask[] | null>;
+
 export type EndFileIngestResponse = null;
+
+export type ConfigurationWithMetadata<T> = TimestampFields &
+    T & {
+        name: string;
+        description: string;
+        id: number;
+    };
+
+export type GetConfigurationResponse = BasicResponse<ConfigurationWithMetadata<ConfigurationPayload>[]>;
+
+export type UpdateConfigurationResponse = BasicResponse<ConfigurationPayload>;
+
+export type GetCollectorsResponse = BasicResponse<{
+    latest: string;
+    versions: {
+        version: string;
+        sha256sum: string;
+        deprecated: boolean;
+    }[];
+}>;
+
+export type GetCommunityCollectorsResponse = BasicResponse<Record<CommunityCollectorType, CollectorManifest[]>>;
+
+export type GetEnterpriseCollectorsResponse = BasicResponse<Record<EnterpriseCollectorType, CollectorManifest[]>>;
+
+export type GetCustomNodeKindsResponse = BasicResponse<CustomNodeKindType[]>;
+
+export type GetScheduledJobDisplayResponse = PaginatedResponse<ScheduledJobDisplay[]>;
+
+export type GetExportQueryResponse = AxiosResponse<Blob>;
+
+export type GetClientResponse = PaginatedResponse<Client[]>;
+
+export type GetSelfResponse = BasicResponse<Self>;
+
+export type Self = {
+    AuthSecret: {
+        id: number;
+        digest_method: string;
+        expires_at: string;
+        totp_activated: boolean;
+    };
+    email_address: string;
+    eula_accepted: boolean;
+    first_name: string;
+    id: string;
+    last_login: string;
+    last_name: string;
+    principal_name: string;
+    saml_provider_id: number | null;
+    roles: Role[];
+    all_environments?: boolean;
+    created_at: string;
+    environment_targeted_access_control?: EnvironmentRequest[] | null;
+    is_disabled: boolean;
+    sso_provider_id: number | null;
+    updated_at: string;
+};

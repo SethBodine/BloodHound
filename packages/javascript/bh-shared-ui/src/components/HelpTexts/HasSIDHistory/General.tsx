@@ -14,10 +14,10 @@
 //
 // SPDX-License-Identifier: Apache-2.0
 
-import { FC } from 'react';
-import { typeFormat } from '../utils';
-import { EdgeInfoProps } from '../index';
 import { Typography } from '@mui/material';
+import { FC } from 'react';
+import { EdgeInfoProps } from '../index';
+import { typeFormat } from '../utils';
 
 const General: FC<EdgeInfoProps> = ({ sourceName, sourceType, targetName, targetType }) => {
     return (
@@ -27,10 +27,8 @@ const General: FC<EdgeInfoProps> = ({ sourceName, sourceType, targetName, target
                 {typeFormat(targetType)} {targetName}.
             </Typography>
             <Typography variant='body2'>
-                When a kerberos ticket is created for {sourceName}, it will include the SID for {targetName}, and
-                therefore grant
-                {sourceName} the same privileges and permissions as
-                {targetName}.
+                When a Kerberos ticket is created for {sourceName}, it will include the SID for {targetName} and
+                therefore grant {sourceName} the same privileges and permissions as {targetName}.
             </Typography>
         </>
     );

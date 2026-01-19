@@ -1,17 +1,17 @@
 // Copyright 2023 Specter Ops, Inc.
-// 
+//
 // Licensed under the Apache License, Version 2.0
 // you may not use this file except in compliance with the License.
 // You may obtain a copy of the License at
-// 
+//
 //     http://www.apache.org/licenses/LICENSE-2.0
-// 
+//
 // Unless required by applicable law or agreed to in writing, software
 // distributed under the License is distributed on an "AS IS" BASIS,
 // WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
 // See the License for the specific language governing permissions and
 // limitations under the License.
-// 
+//
 // SPDX-License-Identifier: Apache-2.0
 
 package tsgen
@@ -152,18 +152,10 @@ func (s *Group) Render(writer io.Writer) error {
 		}
 	}
 
-	switch s.GroupType {
-	case groupTypeFunctionParameters:
-		// Functions with parameters require a ':' after the parameters
-		if _, err := writer.Write([]byte(literalColon)); err != nil {
-			return err
-		}
-	}
-
 	return nil
 }
 
-func (s Group) renderItems(writer io.Writer) error {
+func (s *Group) renderItems(writer io.Writer) error {
 	first := true
 
 	for idx, code := range s.Code {
@@ -175,7 +167,7 @@ func (s Group) renderItems(writer io.Writer) error {
 
 		// Exceptions for omitting the separator prepend
 		skipSeparator := false
-
+		needsSeparator := false
 		if group, isGroup := code.(*Group); isGroup {
 			// Index groups that are preceded by an identifier should omit their separator so that the resulting render
 			// appears as: "Identifier[<values>]" instead of: "Identifier [<values>]"
@@ -184,9 +176,18 @@ func (s Group) renderItems(writer io.Writer) error {
 					skipSeparator = true
 				}
 			}
+
+			// If the previous group type is the same, force separator instead
+			if previousCode, hasPrevious := s.ParentPreviousTo(s); hasPrevious {
+				if previousGroup, isGroup := previousCode.(*Group); isGroup {
+					if previousGroup.GroupType == s.GroupType {
+						needsSeparator = true
+					}
+				}
+			}
 		}
 
-		if !first && !skipSeparator && s.Tokens.HasSeparatorToken() {
+		if (!first || needsSeparator) && !skipSeparator && s.Tokens.HasSeparatorToken() {
 			// The separator token is added before each non-null item, but not before the first item.
 			if _, err := writer.Write([]byte(s.Tokens.Separator)); err != nil {
 				return err
@@ -203,7 +204,6 @@ func (s Group) renderItems(writer io.Writer) error {
 		if err := code.Render(writer); err != nil {
 			return err
 		}
-
 		first = false
 	}
 
@@ -260,10 +260,19 @@ func (s *Group) pushGroup(handler CursorHandler, group *Group) {
 
 func (s *Group) runHandlers(handlers []CursorHandler, groupType GroupType, groupTokens GroupTokens, multiline bool) {
 	if len(handlers) > 0 {
-		for _, handler := range handlers {
+		for i, handler := range handlers {
+			// Ensure only enclosure tokens only present on first and last
+			handlerGroupTokens := groupTokens
+			if i > 0 {
+				handlerGroupTokens.Open = ""
+			}
+			if i < len(handlers)-1 {
+				handlerGroupTokens.Close = ""
+			}
+
 			s.pushGroup(handler, &Group{
 				GroupType: groupType,
-				Tokens:    groupTokens,
+				Tokens:    handlerGroupTokens,
 				MultiLine: multiline,
 			})
 		}

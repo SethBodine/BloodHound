@@ -15,13 +15,15 @@
 // SPDX-License-Identifier: Apache-2.0
 
 import General from './General';
-import Abuse from './Abuse';
+import LinuxAbuse from './LinuxAbuse';
 import Opsec from './Opsec';
 import References from './References';
+import WindowsAbuse from './WindowsAbuse';
 
 const GPLink = {
     general: General,
-    abuse: Abuse,
+    windowsAbuse: WindowsAbuse,
+    linuxAbuse: LinuxAbuse,
     opsec: Opsec,
     references: References,
 };

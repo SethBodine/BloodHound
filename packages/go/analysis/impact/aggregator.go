@@ -17,12 +17,16 @@
 package impact
 
 import (
-	"github.com/specterops/bloodhound/dawgs/cardinality"
-	"github.com/specterops/bloodhound/dawgs/graph"
-	"github.com/specterops/bloodhound/log"
+	"fmt"
+	"log/slog"
+	"sync"
+
+	"github.com/specterops/bloodhound/packages/go/bhlog/measure"
+	"github.com/specterops/dawgs/cardinality"
+	"github.com/specterops/dawgs/graph"
 )
 
-// Aggregator is a cardinality aggregator for paths and shortcut paths.
+// PathAggregator is a cardinality aggregator for paths and shortcut paths.
 //
 // When encoding shortcut paths the aggregator will track node dependencies for nodes that otherwise would have missing
 // cardinality entries. Dependencies are organized as an adjacency list for each node. These adjacency lists combine to
@@ -31,28 +35,67 @@ import (
 // Once all paths are encoded, shortcut or otherwise, into the aggregator, users may then resolve the full cardinality
 // of nodes by calling the cardinality functions of the aggregator. Resolution is accomplished using a recursive
 // depth-first strategy.
-type Aggregator struct {
-	resolved               cardinality.Duplex[uint32]
-	cardinalities          *graph.IndexedSlice[uint32, cardinality.Provider[uint32]]
-	dependencies           map[uint32]cardinality.Duplex[uint32]
-	newCardinalityProvider cardinality.ProviderConstructor[uint32]
+type PathAggregator interface {
+	Cardinality(targets ...uint64) cardinality.Provider[uint64]
+	AddPath(path *graph.PathSegment)
+	AddShortcut(path *graph.PathSegment)
 }
 
-func NewAggregator(newCardinalityProvider cardinality.ProviderConstructor[uint32]) Aggregator {
-	return Aggregator{
-		cardinalities:          graph.NewIndexedSlice[uint32, cardinality.Provider[uint32]](),
-		dependencies:           map[uint32]cardinality.Duplex[uint32]{},
-		resolved:               cardinality.NewBitmap32(),
+type ThreadSafeAggregator struct {
+	aggregator PathAggregator
+	lock       *sync.RWMutex
+}
+
+func (s ThreadSafeAggregator) Cardinality(targets ...uint64) cardinality.Provider[uint64] {
+	s.lock.Lock()
+	defer s.lock.Unlock()
+
+	return s.aggregator.Cardinality(targets...)
+}
+
+func (s ThreadSafeAggregator) AddPath(path *graph.PathSegment) {
+	s.lock.Lock()
+	defer s.lock.Unlock()
+
+	s.aggregator.AddPath(path)
+}
+
+func (s ThreadSafeAggregator) AddShortcut(path *graph.PathSegment) {
+	s.lock.Lock()
+	defer s.lock.Unlock()
+
+	s.aggregator.AddShortcut(path)
+}
+
+func NewThreadSafeAggregator(aggregator PathAggregator) PathAggregator {
+	return &ThreadSafeAggregator{
+		aggregator: aggregator,
+		lock:       &sync.RWMutex{},
+	}
+}
+
+type aggregator struct {
+	resolved               cardinality.Duplex[uint64]
+	cardinalities          *graph.IndexedSlice[uint64, cardinality.Provider[uint64]]
+	dependencies           map[uint64]cardinality.Duplex[uint64]
+	newCardinalityProvider cardinality.ProviderConstructor[uint64]
+}
+
+func NewAggregator(newCardinalityProvider cardinality.ProviderConstructor[uint64]) PathAggregator {
+	return aggregator{
+		cardinalities:          graph.NewIndexedSlice[uint64, cardinality.Provider[uint64]](),
+		dependencies:           map[uint64]cardinality.Duplex[uint64]{},
+		resolved:               cardinality.NewBitmap64(),
 		newCardinalityProvider: newCardinalityProvider,
 	}
 }
 
 // pushDependency adds a new dependency for the given target.
-func (s Aggregator) pushDependency(target, dependency uint32) {
+func (s aggregator) pushDependency(target, dependency uint64) {
 	if dependencies, hasDependencies := s.dependencies[target]; hasDependencies {
 		dependencies.Add(dependency)
 	} else {
-		newDependencies := cardinality.NewBitmap32()
+		newDependencies := cardinality.NewBitmap64()
 		newDependencies.Add(dependency)
 
 		s.dependencies[target] = newDependencies
@@ -61,9 +104,9 @@ func (s Aggregator) pushDependency(target, dependency uint32) {
 
 // popDependencies will take the simplex cardinality provider reference for the given target, remove it from the
 // containing map in the aggregator and then return it
-func (s Aggregator) popDependencies(targetUint32ID uint32) []uint32 {
-	dependencies, hasDependencies := s.dependencies[targetUint32ID]
-	delete(s.dependencies, targetUint32ID)
+func (s aggregator) popDependencies(targetID uint64) []uint64 {
+	dependencies, hasDependencies := s.dependencies[targetID]
+	delete(s.dependencies, targetID)
 
 	if hasDependencies {
 		return dependencies.Slice()
@@ -72,38 +115,38 @@ func (s Aggregator) popDependencies(targetUint32ID uint32) []uint32 {
 	return nil
 }
 
-func (s Aggregator) getImpact(targetUint32ID uint32) cardinality.Provider[uint32] {
-	return s.cardinalities.GetOr(targetUint32ID, s.newCardinalityProvider)
+func (s aggregator) getImpact(targetID uint64) cardinality.Provider[uint64] {
+	return s.cardinalities.GetOr(targetID, s.newCardinalityProvider)
 }
 
 // resolution is a cursor type that tracks the resolution of a node's impact
 type resolution struct {
-	// target is the uint32 ID of the node being resolved
-	target uint32
+	// target is the uint64 ID of the node being resolved
+	target uint64
 
 	// impact stores the cardinality of the target's impact
-	impact cardinality.Provider[uint32]
+	impact cardinality.Provider[uint64]
 
 	// completions are cardinality providers that will have this resolution's impact merged into them
-	completions []cardinality.Provider[uint32]
+	completions []cardinality.Provider[uint64]
 
-	// dependencies contains a slice of uint32 node IDs that this resolution depends on
-	dependencies []uint32
+	// dependencies contains a slice of uint64 node IDs that this resolution depends on
+	dependencies []uint64
 }
 
-// resolve takes the target uint32 ID of a node and calculates the cardinality of nodes that have a path that traverse
+// resolve takes the target uint64 ID of a node and calculates the cardinality of nodes that have a path that traverse
 // it
-func (s Aggregator) resolve(targetUint32ID uint32) cardinality.Provider[uint32] {
+func (s aggregator) resolve(targetID uint64) cardinality.Provider[uint64] {
 	var (
-		targetImpact = s.getImpact(targetUint32ID)
-		resolutions  = map[uint32]*resolution{
-			targetUint32ID: {
-				target:       targetUint32ID,
+		targetImpact = s.getImpact(targetID)
+		resolutions  = map[uint64]*resolution{
+			targetID: {
+				target:       targetID,
 				impact:       targetImpact,
-				dependencies: s.popDependencies(targetUint32ID),
+				dependencies: s.popDependencies(targetID),
 			},
 		}
-		stack = []uint32{targetUint32ID}
+		stack = []uint64{targetID}
 	)
 
 	for len(stack) > 0 {
@@ -128,7 +171,7 @@ func (s Aggregator) resolve(targetUint32ID uint32) cardinality.Provider[uint32] 
 				resolutions[nextDependency] = &resolution{
 					target:       nextDependency,
 					impact:       s.getImpact(nextDependency),
-					completions:  []cardinality.Provider[uint32]{next.impact},
+					completions:  []cardinality.Provider[uint64]{next.impact},
 					dependencies: s.popDependencies(nextDependency),
 				}
 			}
@@ -157,9 +200,9 @@ func (s Aggregator) resolve(targetUint32ID uint32) cardinality.Provider[uint32] 
 	return targetImpact
 }
 
-func (s Aggregator) Cardinality(targets ...uint32) cardinality.Provider[uint32] {
-	log.Debugf("Calculating pathMembers cardinality for %d targets", len(targets))
-	defer log.Measure(log.LevelDebug, "Calculated pathMembers cardinality for %d targets", len(targets))()
+func (s aggregator) Cardinality(targets ...uint64) cardinality.Provider[uint64] {
+	slog.Debug(fmt.Sprintf("Calculating pathMembers cardinality for %d targets", len(targets)))
+	defer measure.Measure(slog.LevelDebug, "Calculated pathMembers cardinality", slog.Int("num_targets", len(targets)))()
 
 	impact := s.newCardinalityProvider()
 
@@ -174,40 +217,31 @@ func (s Aggregator) Cardinality(targets ...uint32) cardinality.Provider[uint32] 
 	return impact
 }
 
-func (s Aggregator) AddPath(path *graph.PathSegment, impactKinds graph.Kinds) {
-	var impactingNodes []uint32
-
-	if path.Node.Kinds.ContainsOneOf(impactKinds...) {
-		impactingNodes = append(impactingNodes, path.Node.ID.Uint32())
+func (s aggregator) AddPath(path *graph.PathSegment) {
+	impactingNodes := []uint64{
+		path.Node.ID.Uint64(),
 	}
 
 	for cursor := path.Trunk; cursor != nil; cursor = cursor.Trunk {
 		// Only pull the pathMembers from the map if we have nodes that should be counted for this cursor
 		if len(impactingNodes) > 0 {
-			s.getImpact(cursor.Node.ID.Uint32()).Add(impactingNodes...)
+			s.getImpact(cursor.Node.ID.Uint64()).Add(impactingNodes...)
 		}
 
-		// Only roll up cardinalities for nodes that belong to the set of impacting kinds
-		if cursor.Node.Kinds.ContainsOneOf(impactKinds...) {
-			impactingNodes = append(impactingNodes, cursor.Node.ID.Uint32())
-		}
+		impactingNodes = append(impactingNodes, cursor.Node.ID.Uint64())
 	}
 }
 
-func (s Aggregator) AddShortcut(path *graph.PathSegment, impactKinds graph.Kinds) {
+func (s aggregator) AddShortcut(path *graph.PathSegment) {
 	var (
-		terminalUint32ID = path.Node.ID.Uint32()
-		impactingNodes   []uint32
+		terminalUint32ID = path.Node.ID.Uint64()
+		impactingNodes   = []uint64{
+			terminalUint32ID,
+		}
 	)
 
-	// Only add the terminal to the impacting nodes if it's a type that imparts impact - this does not remove the
-	// shortcut from dependency tracking of upstream impacted nodes
-	if path.Node.Kinds.ContainsOneOf(impactKinds...) {
-		impactingNodes = append(impactingNodes, terminalUint32ID)
-	}
-
 	for cursor := path.Trunk; cursor != nil; cursor = cursor.Trunk {
-		cursorNodeUint32ID := cursor.Node.ID.Uint32()
+		cursorNodeUint32ID := cursor.Node.ID.Uint64()
 
 		// Add the terminal shortcut as a dependency to each ascending node
 		s.pushDependency(cursorNodeUint32ID, terminalUint32ID)
@@ -217,13 +251,10 @@ func (s Aggregator) AddShortcut(path *graph.PathSegment, impactKinds graph.Kinds
 			s.getImpact(cursorNodeUint32ID).Add(impactingNodes...)
 		}
 
-		// Only roll up cardinalities for nodes that belong to the set of impacting kinds
-		if cursor.Node.Kinds.ContainsOneOf(impactKinds...) {
-			impactingNodes = append(impactingNodes, cursor.Node.ID.Uint32())
-		}
+		impactingNodes = append(impactingNodes, cursor.Node.ID.Uint64())
 	}
 }
 
-func (s Aggregator) Resolved() cardinality.Duplex[uint32] {
+func (s aggregator) Resolved() cardinality.Duplex[uint64] {
 	return s.resolved
 }

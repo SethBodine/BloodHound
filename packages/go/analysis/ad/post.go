@@ -19,51 +19,22 @@ package ad
 import (
 	"context"
 	"fmt"
+	"log/slog"
 
-	"github.com/RoaringBitmap/roaring/roaring64"
-	"github.com/specterops/bloodhound/analysis"
-	"github.com/specterops/bloodhound/analysis/impact"
-	"github.com/specterops/bloodhound/dawgs/cardinality"
-	"github.com/specterops/bloodhound/dawgs/graph"
-	"github.com/specterops/bloodhound/dawgs/ops"
-	"github.com/specterops/bloodhound/dawgs/query"
-	"github.com/specterops/bloodhound/dawgs/util/channels"
-	"github.com/specterops/bloodhound/graphschema/ad"
-	"github.com/specterops/bloodhound/graphschema/common"
-	"github.com/specterops/bloodhound/log"
+	"github.com/RoaringBitmap/roaring/v2/roaring64"
+	"github.com/specterops/bloodhound/packages/go/analysis"
+	"github.com/specterops/bloodhound/packages/go/analysis/ad/wellknown"
+	"github.com/specterops/bloodhound/packages/go/analysis/impact"
+	"github.com/specterops/bloodhound/packages/go/graphschema/ad"
+	"github.com/specterops/bloodhound/packages/go/graphschema/common"
+	"github.com/specterops/dawgs/cardinality"
+	"github.com/specterops/dawgs/graph"
+	"github.com/specterops/dawgs/ops"
+	"github.com/specterops/dawgs/query"
+	"github.com/specterops/dawgs/util/channels"
 )
 
-func PostProcessedRelationships() []graph.Kind {
-	return []graph.Kind{
-		ad.DCSync,
-		ad.SyncLAPSPassword,
-		ad.CanRDP,
-		ad.AdminTo,
-		ad.CanPSRemote,
-		ad.ExecuteDCOM,
-		ad.TrustedForNTAuth,
-		ad.IssuedSignedBy,
-		ad.EnterpriseCAFor,
-		ad.CanAbuseWeakCertBinding,
-		ad.CanAbuseUPNCertMapping,
-		ad.GoldenCert,
-		ad.CanAbuseUPNCertMapping,
-		ad.CanAbuseWeakCertBinding,
-		ad.ADCSESC1,
-		ad.ADCSESC3,
-		ad.ADCSESC4,
-		ad.ADCSESC5,
-		ad.ADCSESC6a,
-		ad.ADCSESC6b,
-		ad.ADCSESC7,
-		ad.ADCSESC10a,
-		ad.ADCSESC10b,
-		ad.ADCSESC9a,
-		ad.EnrollOnBehalfOf,
-	}
-}
-
-func PostSyncLAPSPassword(ctx context.Context, db graph.Database) (*analysis.AtomicPostProcessingStats, error) {
+func PostSyncLAPSPassword(ctx context.Context, db graph.Database, groupExpansions impact.PathAggregator) (*analysis.AtomicPostProcessingStats, error) {
 	if domainNodes, err := fetchCollectedDomainNodes(ctx, db); err != nil {
 		return &analysis.AtomicPostProcessingStats{}, err
 	} else {
@@ -71,25 +42,22 @@ func PostSyncLAPSPassword(ctx context.Context, db graph.Database) (*analysis.Ato
 		for _, domain := range domainNodes {
 			innerDomain := domain
 			operation.Operation.SubmitReader(func(ctx context.Context, tx graph.Transaction, outC chan<- analysis.CreatePostRelationshipJob) error {
-				if lapsSyncers, err := analysis.GetLAPSSyncers(tx, innerDomain); err != nil {
+				if lapsSyncers, err := getLAPSSyncers(tx, innerDomain, groupExpansions); err != nil {
 					return err
-				} else if len(lapsSyncers) == 0 {
+				} else if lapsSyncers.Cardinality() == 0 {
 					return nil
 				} else if computers, err := getLAPSComputersForDomain(tx, innerDomain); err != nil {
 					return err
 				} else {
 					for _, computer := range computers {
-						for _, lapsSyncer := range lapsSyncers {
-							nextJob := analysis.CreatePostRelationshipJob{
-								FromID: lapsSyncer.ID,
+						lapsSyncers.Each(func(value uint64) bool {
+							channels.Submit(ctx, outC, analysis.CreatePostRelationshipJob{
+								FromID: graph.ID(value),
 								ToID:   computer,
 								Kind:   ad.SyncLAPSPassword,
-							}
-
-							if !channels.Submit(ctx, outC, nextJob) {
-								return nil
-							}
-						}
+							})
+							return true
+						})
 					}
 
 					return nil
@@ -101,7 +69,7 @@ func PostSyncLAPSPassword(ctx context.Context, db graph.Database) (*analysis.Ato
 	}
 }
 
-func PostDCSync(ctx context.Context, db graph.Database) (*analysis.AtomicPostProcessingStats, error) {
+func PostDCSync(ctx context.Context, db graph.Database, groupExpansions impact.PathAggregator) (*analysis.AtomicPostProcessingStats, error) {
 	if domainNodes, err := fetchCollectedDomainNodes(ctx, db); err != nil {
 		return &analysis.AtomicPostProcessingStats{}, err
 	} else {
@@ -110,26 +78,104 @@ func PostDCSync(ctx context.Context, db graph.Database) (*analysis.AtomicPostPro
 		for _, domain := range domainNodes {
 			innerDomain := domain
 			operation.Operation.SubmitReader(func(ctx context.Context, tx graph.Transaction, outC chan<- analysis.CreatePostRelationshipJob) error {
-				if dcSyncers, err := analysis.GetDCSyncers(tx, innerDomain, true); err != nil {
+				if dcSyncers, err := getDCSyncers(tx, innerDomain, groupExpansions); err != nil {
 					return err
-				} else if len(dcSyncers) == 0 {
+				} else if dcSyncers.Cardinality() == 0 {
 					return nil
 				} else {
-					for _, dcSyncer := range dcSyncers {
-						nextJob := analysis.CreatePostRelationshipJob{
-							FromID: dcSyncer.ID,
+					dcSyncers.Each(func(value uint64) bool {
+						channels.Submit(ctx, outC, analysis.CreatePostRelationshipJob{
+							FromID: graph.ID(value),
 							ToID:   innerDomain.ID,
 							Kind:   ad.DCSync,
-						}
-
-						if !channels.Submit(ctx, outC, nextJob) {
-							return nil
-						}
-					}
+						})
+						return true
+					})
 
 					return nil
 				}
 			})
+		}
+
+		return &operation.Stats, operation.Done()
+	}
+}
+
+func PostProtectAdminGroups(ctx context.Context, db graph.Database) (*analysis.AtomicPostProcessingStats, error) {
+	domainNodes, err := fetchCollectedDomainNodes(ctx, db)
+	if err != nil {
+		return &analysis.AtomicPostProcessingStats{}, err
+	}
+
+	operation := analysis.NewPostRelationshipOperation(ctx, db, "ProtectAdminGroups Post Processing")
+
+	for _, domain := range domainNodes {
+
+		operation.Operation.SubmitReader(func(ctx context.Context, tx graph.Transaction, outC chan<- analysis.CreatePostRelationshipJob) error {
+			if adminSDHolderIDs, err := getAdminSDHolder(tx, domain); graph.IsErrNotFound(err) {
+				// No AdminSDHolder IDs found for this domain
+				return nil
+			} else if err != nil {
+				return err
+			} else if len(adminSDHolderIDs) == 0 {
+				// No AdminSDHolder IDs found for this domain
+				return nil
+			} else if protectedObjectIDs, err := getAdminSDHolderProtected(tx, domain); err != nil {
+				return err
+			} else {
+				fromID := adminSDHolderIDs[0] // AdminSDHolder should be unique per domain
+				for _, toID := range protectedObjectIDs {
+					channels.Submit(ctx, outC, analysis.CreatePostRelationshipJob{
+						FromID: fromID,
+						ToID:   toID,
+						Kind:   ad.ProtectAdminGroups,
+					})
+				}
+				return nil
+			}
+		})
+	}
+
+	return &operation.Stats, operation.Done()
+}
+
+func PostHasTrustKeys(ctx context.Context, db graph.Database) (*analysis.AtomicPostProcessingStats, error) {
+	if domainNodes, err := fetchCollectedDomainNodes(ctx, db); err != nil {
+		return &analysis.AtomicPostProcessingStats{}, err
+	} else {
+		operation := analysis.NewPostRelationshipOperation(ctx, db, "HasTrustKeys Post Processing")
+		if err := operation.Operation.SubmitReader(func(ctx context.Context, tx graph.Transaction, outC chan<- analysis.CreatePostRelationshipJob) error {
+			for _, domain := range domainNodes {
+				if netbios, err := domain.Properties.Get(ad.NetBIOS.String()).String(); err != nil {
+					// The property is new and may therefore not exist
+					slog.DebugContext(ctx, fmt.Sprintf("Skipping domain %d: missing NetBIOS property", domain.ID))
+					continue
+				} else if trustingDomains, err := getDirectOutboundTrustDomains(tx, domain); err != nil {
+					slog.ErrorContext(ctx, fmt.Sprintf("Error getting outbound trust edges from domain %d: %v", domain.ID, err))
+					continue
+				} else {
+					for _, trustingDomain := range trustingDomains {
+						if trustingDomainSid, err := trustingDomain.Properties.Get(ad.DomainSID.String()).String(); err != nil {
+							// DomainSID is only created after we have performed collection of the domain
+							slog.DebugContext(ctx, fmt.Sprintf("Skipping trusting domain %d: missing DomainSID property", trustingDomain.ID))
+							continue
+						} else if trustAccount, err := getTrustAccount(tx, trustingDomainSid, netbios); err != nil {
+							// The account may not exist if we have not collected it
+							slog.DebugContext(ctx, fmt.Sprintf("Trust account not found for domain SID %s and NetBIOS %s", trustingDomainSid, netbios))
+							continue
+						} else {
+							channels.Submit(ctx, outC, analysis.CreatePostRelationshipJob{
+								FromID: domain.ID,
+								ToID:   trustAccount.ID,
+								Kind:   ad.HasTrustKeys,
+							})
+						}
+					}
+				}
+			}
+			return nil
+		}); err != nil {
+			return &analysis.AtomicPostProcessingStats{}, fmt.Errorf("error creating HasTrustKeys edges: %w", err)
 		}
 
 		return &operation.Stats, operation.Done()
@@ -185,6 +231,66 @@ func fetchCollectedDomainNodes(ctx context.Context, db graph.Database) ([]*graph
 	})
 }
 
+func getDirectOutboundTrustDomains(tx graph.Transaction, domain *graph.Node) (graph.NodeSet, error) {
+	return ops.FetchEndNodes(tx.Relationships().Filterf(func() graph.Criteria {
+		return query.And(
+			query.Equals(query.StartID(), domain.ID),
+			query.KindIn(query.Relationship(), ad.SameForestTrust, ad.CrossForestTrust),
+			query.Kind(query.End(), ad.Domain),
+		)
+	}))
+}
+
+func getTrustAccount(tx graph.Transaction, domainSid, netbios string) (*graph.Node, error) {
+	nodes, err := ops.FetchNodes(tx.Nodes().Filterf(func() graph.Criteria {
+		return query.And(
+			query.Kind(query.Node(), ad.User),
+			query.Equals(query.NodeProperty(ad.DomainSID.String()), domainSid),
+			query.Equals(query.NodeProperty(ad.SamAccountName.String()), netbios+"$"),
+		)
+	}).Limit(1))
+	if err != nil {
+		return nil, err
+	}
+	if len(nodes) == 0 {
+		return nil, graph.ErrNoResultsFound
+	}
+	return nodes[0], err
+}
+func getLAPSSyncers(tx graph.Transaction, domain *graph.Node, groupExpansions impact.PathAggregator) (cardinality.Duplex[uint64], error) {
+	var (
+		getChangesQuery         = analysis.FromEntityToEntityWithRelationshipKind(tx, domain, ad.GetChanges)
+		getChangesFilteredQuery = analysis.FromEntityToEntityWithRelationshipKind(tx, domain, ad.GetChangesInFilteredSet)
+	)
+
+	if getChangesNodes, err := ops.FetchStartNodes(getChangesQuery); err != nil {
+		return nil, err
+	} else if getChangesFilteredNodes, err := ops.FetchStartNodes(getChangesFilteredQuery); err != nil {
+		return nil, err
+	} else {
+		results := CalculateCrossProductNodeSets(tx, groupExpansions, getChangesNodes.Slice(), getChangesFilteredNodes.Slice())
+
+		return results, nil
+	}
+}
+
+func getDCSyncers(tx graph.Transaction, domain *graph.Node, groupExpansions impact.PathAggregator) (cardinality.Duplex[uint64], error) {
+	var (
+		getChangesQuery    = analysis.FromEntityToEntityWithRelationshipKind(tx, domain, ad.GetChanges)
+		getChangesAllQuery = analysis.FromEntityToEntityWithRelationshipKind(tx, domain, ad.GetChangesAll)
+	)
+
+	if getChangesNodes, err := ops.FetchStartNodes(getChangesQuery); err != nil {
+		return nil, err
+	} else if getChangesAllNodes, err := ops.FetchStartNodes(getChangesAllQuery); err != nil {
+		return nil, err
+	} else {
+		results := CalculateCrossProductNodeSets(tx, groupExpansions, getChangesNodes.Slice(), getChangesAllNodes.Slice())
+
+		return results, nil
+	}
+}
+
 func getLAPSComputersForDomain(tx graph.Transaction, domain *graph.Node) ([]graph.ID, error) {
 	if domainSid, err := domain.Properties.Get(ad.DomainSID.String()).String(); err != nil {
 		return nil, err
@@ -200,7 +306,36 @@ func getLAPSComputersForDomain(tx graph.Transaction, domain *graph.Node) ([]grap
 	}
 }
 
-func PostLocalGroups(ctx context.Context, db graph.Database, localGroupExpansions impact.PathAggregator, enforceURA bool) (*analysis.AtomicPostProcessingStats, error) {
+func getAdminSDHolder(tx graph.Transaction, domain *graph.Node) ([]graph.ID, error) {
+	if domainSid, err := domain.Properties.Get(ad.DomainSID.String()).String(); err != nil {
+		return nil, err
+	} else {
+		return ops.FetchNodeIDs(tx.Nodes().Filterf(func() graph.Criteria {
+			return query.And(
+				query.KindIn(query.Node(), ad.Container),
+				query.StringStartsWith(query.NodeProperty(ad.DistinguishedName.String()), AdminSDHolderDNPrefix),
+				query.Equals(query.NodeProperty(ad.DomainSID.String()), domainSid),
+			)
+		}))
+	}
+}
+
+func getAdminSDHolderProtected(tx graph.Transaction, domain *graph.Node) ([]graph.ID, error) {
+	if domainSid, err := domain.Properties.Get(ad.DomainSID.String()).String(); err != nil {
+		return nil, err
+	} else {
+		return ops.FetchNodeIDs(tx.Nodes().Filterf(func() graph.Criteria {
+			return query.And(
+				query.KindIn(query.Node(), ad.Computer, ad.User, ad.Group),
+				query.Equals(
+					query.Property(query.Node(), ad.AdminSDHolderProtected.String()), true),
+				query.Equals(query.Property(query.Node(), ad.DomainSID.String()), domainSid),
+			)
+		}))
+	}
+}
+
+func PostLocalGroups(ctx context.Context, db graph.Database, localGroupExpansions impact.PathAggregator, enforceURA bool, citrixEnabled bool) (*analysis.AtomicPostProcessingStats, error) {
 	var (
 		adminGroupSuffix    = "-544"
 		psRemoteGroupSuffix = "-580"
@@ -219,7 +354,7 @@ func PostLocalGroups(ctx context.Context, db graph.Database, localGroupExpansion
 			computerID := graph.ID(computer)
 
 			if idx > 0 && idx%10000 == 0 {
-				log.Infof("Post processed %d active directory computers", idx)
+				slog.InfoContext(ctx, fmt.Sprintf("Post processed %d active directory computers", idx))
 			}
 
 			if err := operation.Operation.SubmitReader(func(ctx context.Context, tx graph.Transaction, outC chan<- analysis.CreatePostRelationshipJob) error {
@@ -289,7 +424,7 @@ func PostLocalGroups(ctx context.Context, db graph.Database, localGroupExpansion
 			}
 
 			if err := operation.Operation.SubmitReader(func(ctx context.Context, tx graph.Transaction, outC chan<- analysis.CreatePostRelationshipJob) error {
-				if entities, err := FetchRDPEntityBitmapForComputer(tx, computerID, threadSafeLocalGroupExpansions, enforceURA); err != nil {
+				if entities, err := FetchCanRDPEntityBitmapForComputer(tx, computerID, threadSafeLocalGroupExpansions, enforceURA, citrixEnabled); err != nil {
 					return err
 				} else {
 					for _, rdp := range entities.Slice() {
@@ -311,7 +446,7 @@ func PostLocalGroups(ctx context.Context, db graph.Database, localGroupExpansion
 			}
 		}
 
-		log.Infof("Finished post-processing %d active directory computers", computers.GetCardinality())
+		slog.InfoContext(ctx, fmt.Sprintf("Finished post-processing %d active directory computers", computers.GetCardinality()))
 		return &operation.Stats, operation.Done()
 	}
 }
@@ -387,6 +522,21 @@ func FetchComputerLocalGroupBySIDSuffix(tx graph.Transaction, computer graph.ID,
 	}
 }
 
+func FetchComputerLocalGroupByName(tx graph.Transaction, computer graph.ID, groupName string) (*graph.Node, error) {
+	if rel, err := tx.Relationships().Filter(
+		query.And(
+			query.Kind(query.Start(), ad.LocalGroup),
+			query.CaseInsensitiveStringStartsWith(query.StartProperty(common.Name.String()), groupName),
+			query.Kind(query.Relationship(), ad.LocalToComputer),
+			query.InIDs(query.EndID(), computer),
+		),
+	).First(); err != nil {
+		return nil, err
+	} else {
+		return ops.FetchNode(tx, rel.StartID)
+	}
+}
+
 func FetchLocalGroupMembership(tx graph.Transaction, computer graph.ID, groupSuffix string) (graph.NodeSet, error) {
 	if localGroup, err := FetchComputerLocalGroupBySIDSuffix(tx, computer, groupSuffix); err != nil {
 		return nil, err
@@ -399,21 +549,21 @@ func FetchLocalGroupMembership(tx graph.Transaction, computer graph.ID, groupSuf
 	}
 }
 
-func FetchRemoteInteractiveLogonPrivilegedEntities(tx graph.Transaction, computerId graph.ID) (graph.NodeSet, error) {
+func FetchRemoteInteractiveLogonRightEntities(tx graph.Transaction, computerId graph.ID) (graph.NodeSet, error) {
 	return ops.FetchStartNodes(tx.Relationships().Filterf(func() graph.Criteria {
 		return query.And(
-			query.Kind(query.Relationship(), ad.RemoteInteractiveLogonPrivilege),
+			query.Kind(query.Relationship(), ad.RemoteInteractiveLogonRight),
 			query.Equals(query.EndID(), computerId),
 		)
 	}))
 }
 
-func HasRemoteInteractiveLogonPrivilege(tx graph.Transaction, groupId, computerId graph.ID) bool {
+func HasRemoteInteractiveLogonRight(tx graph.Transaction, groupId, computerId graph.ID) bool {
 	if _, err := tx.Relationships().Filterf(func() graph.Criteria {
 		return query.And(
 			query.Equals(query.StartID(), groupId),
 			query.Equals(query.EndID(), computerId),
-			query.Kind(query.Relationship(), ad.RemoteInteractiveLogonPrivilege),
+			query.Kind(query.Relationship(), ad.RemoteInteractiveLogonRight),
 		)
 	}).First(); err != nil {
 		return false
@@ -422,42 +572,65 @@ func HasRemoteInteractiveLogonPrivilege(tx graph.Transaction, groupId, computerI
 	return true
 }
 
-func FetchLocalGroupBitmapForComputer(tx graph.Transaction, computer graph.ID, suffix string) (cardinality.Duplex[uint32], error) {
+func FetchLocalGroupBitmapForComputer(tx graph.Transaction, computer graph.ID, suffix string) (cardinality.Duplex[uint64], error) {
 	if members, err := FetchLocalGroupMembership(tx, computer, suffix); err != nil {
 		if graph.IsErrNotFound(err) {
-			return cardinality.NewBitmap32(), nil
+			return cardinality.NewBitmap64(), nil
 		}
 
 		return nil, err
 	} else {
-		return cardinality.NodeSetToDuplex(members), nil
+		return graph.NodeSetToDuplex(members), nil
 	}
 }
 
 func ExpandAllRDPLocalGroups(ctx context.Context, db graph.Database) (impact.PathAggregator, error) {
-	log.Infof("Expanding all AD group and local group memberships")
+	slog.InfoContext(ctx, "Expanding all AD group and local group memberships")
 
 	return ResolveAllGroupMemberships(ctx, db, query.Not(
 		query.Or(
-			query.StringEndsWith(query.StartProperty(common.ObjectID.String()), AdminGroupSuffix),
-			query.StringEndsWith(query.EndProperty(common.ObjectID.String()), AdminGroupSuffix),
+			query.StringEndsWith(query.StartProperty(common.ObjectID.String()), wellknown.AdministratorsSIDSuffix.String()),
+			query.StringEndsWith(query.EndProperty(common.ObjectID.String()), wellknown.AdministratorsSIDSuffix.String()),
 		),
 	))
 }
 
-func FetchRDPEntityBitmapForComputer(tx graph.Transaction, computer graph.ID, localGroupExpansions impact.PathAggregator, enforceURA bool) (cardinality.Duplex[uint32], error) {
-	if rdpLocalGroup, err := FetchComputerLocalGroupBySIDSuffix(tx, computer, RDPGroupSuffix); err != nil {
-		if graph.IsErrNotFound(err) {
-			return cardinality.NewBitmap32(), nil
-		}
+func FetchCanRDPEntityBitmapForComputer(tx graph.Transaction, computer graph.ID, localGroupExpansions impact.PathAggregator, enforceURA bool, citrixEnabled bool) (cardinality.Duplex[uint64], error) {
+	var (
+		uraEnabled    = enforceURA || ComputerHasURACollection(tx, computer)
+		rdpGroup, err = FetchComputerLocalGroupBySIDSuffix(tx, computer, wellknown.RemoteDesktopUsersSIDSuffix.String())
+	)
 
+	if err != nil {
+		if graph.IsErrNotFound(err) {
+			return cardinality.NewBitmap64(), nil
+		}
 		return nil, err
-	} else if enforceURA || ComputerHasURACollection(tx, computer) {
-		return ProcessRDPWithUra(tx, rdpLocalGroup, computer, localGroupExpansions)
-	} else if bitmap, err := FetchLocalGroupBitmapForComputer(tx, computer, RDPGroupSuffix); err != nil {
-		return nil, err
+	}
+
+	// Shortcut opportunity when citrix is disabled: see if the RDP group has RIL privilege. If it does, get the first degree members and return those ids, since everything in RDP group has CanRDP privs. No reason to look any further
+	canSkipURAProcessing := !uraEnabled || HasRemoteInteractiveLogonRight(tx, rdpGroup.ID, computer)
+
+	if citrixEnabled {
+		if dauGroup, err := FetchComputerLocalGroupByName(tx, computer, "Direct Access Users"); err != nil {
+			// "Direct Access Users" is a group that Citrix creates.  If the group does not exist, then the computer does not have Citrix installed and post-processing logic can continue by enumerating the "Remote Desktop Users" AD group.
+			if graph.IsErrNotFound(err) {
+				return FetchRemoteDesktopUsersBitmapForComputer(tx, computer, localGroupExpansions, rdpGroup, canSkipURAProcessing)
+			}
+
+			return nil, err
+		} else if !uraEnabled {
+			// In cases where we do not need to check for the existence of the RIL privilege, return the cross product of both groups
+			return CalculateCrossProductNodeSets(tx, localGroupExpansions, []*graph.Node{rdpGroup}, []*graph.Node{dauGroup}), nil
+		} else if baseRilEntities, err := FetchRemoteInteractiveLogonRightEntities(tx, computer); err != nil {
+			return nil, err
+		} else {
+			// Otherwise, return the cross product of all three criteria
+			return CalculateCrossProductNodeSets(tx, localGroupExpansions, []*graph.Node{rdpGroup}, []*graph.Node{dauGroup}, baseRilEntities.Slice()), nil
+		}
 	} else {
-		return bitmap, nil
+		// When the citrix flag is disabled, fall back to our original implementation
+		return FetchRemoteDesktopUsersBitmapForComputer(tx, computer, localGroupExpansions, rdpGroup, canSkipURAProcessing)
 	}
 }
 
@@ -475,43 +648,36 @@ func ComputerHasURACollection(tx graph.Transaction, computerID graph.ID) bool {
 	}
 }
 
-func ProcessRDPWithUra(tx graph.Transaction, rdpLocalGroup *graph.Node, computer graph.ID, localGroupExpansions impact.PathAggregator) (cardinality.Duplex[uint32], error) {
-	rdpLocalGroupMembers := localGroupExpansions.Cardinality(rdpLocalGroup.ID.Uint32()).(cardinality.Duplex[uint32])
-	// Shortcut opportunity: see if the RDP group has RIL privilege. If it does, get the first degree members and return those ids, since everything in RDP group has CanRDP privs. No reason to look any further
-	if HasRemoteInteractiveLogonPrivilege(tx, rdpLocalGroup.ID, computer) {
-		firstDegreeMembers := cardinality.NewBitmap32()
+func FetchRemoteDesktopUsersBitmapForComputer(tx graph.Transaction, computer graph.ID, localGroupExpansions impact.PathAggregator, rdpGroup *graph.Node, skipURA bool) (cardinality.Duplex[uint64], error) {
+	if skipURA {
+		return FetchLocalGroupBitmapForComputer(tx, computer, wellknown.RemoteDesktopUsersSIDSuffix.String())
+	} else {
+		return ProcessRDPWithUra(tx, rdpGroup, computer, localGroupExpansions)
+	}
+}
 
-		return firstDegreeMembers, tx.Relationships().Filter(
-			query.And(
-				query.Kind(query.Relationship(), ad.MemberOfLocalGroup),
-				query.KindIn(query.Start(), ad.Group, ad.User),
-				query.Equals(query.EndID(), rdpLocalGroup.ID),
-			),
-		).FetchTriples(func(cursor graph.Cursor[graph.RelationshipTripleResult]) error {
-			for result := range cursor.Chan() {
-				firstDegreeMembers.Add(result.StartID.Uint32())
-			}
-			return cursor.Error()
-		})
-	} else if baseRilEntities, err := FetchRemoteInteractiveLogonPrivilegedEntities(tx, computer); err != nil {
+func ProcessRDPWithUra(tx graph.Transaction, rdpLocalGroup *graph.Node, computer graph.ID, localGroupExpansions impact.PathAggregator) (cardinality.Duplex[uint64], error) {
+	rdpLocalGroupMembers := localGroupExpansions.Cardinality(rdpLocalGroup.ID.Uint64()).(cardinality.Duplex[uint64])
+
+	if baseRilEntities, err := FetchRemoteInteractiveLogonRightEntities(tx, computer); err != nil {
 		return nil, err
 	} else {
 		var (
-			rdpEntities      = cardinality.NewBitmap32()
-			secondaryTargets = cardinality.NewBitmap32()
+			rdpEntities      = cardinality.NewBitmap64()
+			secondaryTargets = cardinality.NewBitmap64()
 		)
 
-		// Attempt 2: look at each RIL entity directly and see if it has membership to the RDP group. If not, and it's a group, expand its membership for further processing
+		// Attempt 1: look at each RIL entity directly and see if it has membership to the RDP group. If not, and it's a group, expand its membership for further processing
 		for _, entity := range baseRilEntities {
-			if rdpLocalGroupMembers.Contains(entity.ID.Uint32()) {
+			if rdpLocalGroupMembers.Contains(entity.ID.Uint64()) {
 				// If we have membership to the RDP group, then this is a valid CanRDP entity
-				rdpEntities.Add(entity.ID.Uint32())
+				rdpEntities.Add(entity.ID.Uint64())
 			} else if entity.Kinds.ContainsOneOf(ad.Group, ad.LocalGroup) {
-				secondaryTargets.Or(localGroupExpansions.Cardinality(entity.ID.Uint32()).(cardinality.Duplex[uint32]))
+				secondaryTargets.Or(localGroupExpansions.Cardinality(entity.ID.Uint64()).(cardinality.Duplex[uint64]))
 			}
 		}
 
-		// Attempt 3: Look at each member of expanded groups and see if they have the correct permissions
+		// Attempt 2: Look at each member of expanded groups and see if they have the correct permissions
 		for _, entity := range secondaryTargets.Slice() {
 			// If we have membership to the RDP group then this is a valid CanRDP entity
 			if rdpLocalGroupMembers.Contains(entity) {
@@ -521,15 +687,4 @@ func ProcessRDPWithUra(tx graph.Transaction, rdpLocalGroup *graph.Node, computer
 
 		return rdpEntities, nil
 	}
-}
-
-func ExpandAllEnrollers(ctx context.Context, db graph.Database) (impact.PathAggregator, error) {
-	log.Infof("Expanding all cert template and enterprise ca enrollers")
-
-	return ResolveAllGroupMemberships(ctx, db, query.Not(
-		query.Or(
-			query.StringEndsWith(query.StartProperty(common.ObjectID.String()), AdminGroupSuffix),
-			query.StringEndsWith(query.EndProperty(common.ObjectID.String()), AdminGroupSuffix),
-		),
-	))
 }

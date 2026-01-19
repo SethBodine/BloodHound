@@ -14,24 +14,23 @@
 //
 // SPDX-License-Identifier: Apache-2.0
 
-import { AssetGroup, AssetGroupMember, AssetGroupMemberParams } from 'js-client-library';
-import { FC, ReactNode, useEffect, useState } from 'react';
-import DropdownSelector, { DropdownOption } from '../DropdownSelector';
-import { Box, Button, Grid, Paper, Typography, useTheme } from '@mui/material';
-import { useQuery } from 'react-query';
-import { apiClient } from '../../utils';
+import { Button } from '@bloodhoundenterprise/doodleui';
 import { faExternalLink } from '@fortawesome/free-solid-svg-icons';
 import { FontAwesomeIcon } from '@fortawesome/react-fontawesome';
-import AssetGroupEdit from '../AssetGroupEdit';
-import AssetGroupMemberList from '../AssetGroupMemberList';
-import { SelectedDomain } from './types';
-import DataSelector from '../../views/DataQuality/DataSelector';
+import { Grid, Typography } from '@mui/material';
+import { AssetGroup, AssetGroupMember, AssetGroupMemberParams } from 'js-client-library';
+import { FC, HTMLProps, ReactNode, useEffect, useState } from 'react';
+import { useQuery } from 'react-query';
+import { apiClient } from '../../utils/api';
+import AssetGroupEdit from '../AssetGroupEdit/AssetGroupEdit';
 import AssetGroupFilters from '../AssetGroupFilters';
 import { FILTERABLE_PARAMS } from '../AssetGroupFilters/AssetGroupFilters';
+import AssetGroupMemberList from '../AssetGroupMemberList';
+import { DropdownOption, DropdownSelector } from '../DropdownSelector';
+import { SelectedEnvironment, SimpleEnvironmentSelector } from '../SimpleEnvironmentSelector';
 
-// Top level layout and shared logic for the Group Management page
-const GroupManagementContent: FC<{
-    globalDomain: SelectedDomain | null;
+interface GroupManagementContentProps {
+    globalEnvironment: SelectedEnvironment | null;
     showExplorePageLink: boolean;
     tierZeroLabel: string;
     tierZeroTag: string;
@@ -40,8 +39,12 @@ const GroupManagementContent: FC<{
     onShowNodeInExplore: () => void;
     onClickMember: (member: AssetGroupMember) => void;
     mapAssetGroups: (assetGroups: AssetGroup[]) => DropdownOption[];
-}> = ({
-    globalDomain,
+    userHasEditPermissions: boolean;
+}
+
+// Top level layout and shared logic for the Group Management page
+const GroupManagementContent: FC<GroupManagementContentProps> = ({
+    globalEnvironment,
     showExplorePageLink,
     tierZeroLabel,
     tierZeroTag,
@@ -50,10 +53,9 @@ const GroupManagementContent: FC<{
     onShowNodeInExplore,
     onClickMember,
     mapAssetGroups,
+    userHasEditPermissions,
 }) => {
-    const theme = useTheme();
-
-    const [selectedDomain, setSelectedDomain] = useState<SelectedDomain | null>(null);
+    const [selectedEnvironment, setSelectedEnvironment] = useState<SelectedEnvironment | null>(null);
     const [selectedAssetGroupId, setSelectedAssetGroupId] = useState<number | null>(null);
     const [filterParams, setFilterParams] = useState<AssetGroupMemberParams>({});
 
@@ -83,7 +85,7 @@ const GroupManagementContent: FC<{
         queryFn: ({ signal }) =>
             apiClient
                 .getAssetGroupMembersCount(
-                    selectedAssetGroupId?.toString() ?? '', // This query will only execute if selectedAssetGroup is truethy.
+                    selectedAssetGroupId?.toString() ?? '', // This query will only execute if selectedAssetGroup is truthy.
                     { environment_id: filterParams.environment_id, environment_kind: filterParams.environment_kind },
                     { signal }
                 )
@@ -114,9 +116,11 @@ const GroupManagementContent: FC<{
         setFilterParams((prev) => ({ ...prev, [key]: value.toString() }));
     };
 
+    const handleSelect = (selection: SelectedEnvironment) => setSelectedEnvironment({ ...selection });
+
     // Start building a filter query for members that gets passed down to AssetGroupMemberList to make the request
     useEffect(() => {
-        const filterDomain = selectedDomain || globalDomain;
+        const filterDomain = selectedEnvironment || globalEnvironment;
         const filter: AssetGroupMemberParams = {};
         if (filterDomain?.type === 'active-directory-platform') {
             filter.environment_kind = 'eq:Domain';
@@ -126,40 +130,42 @@ const GroupManagementContent: FC<{
             filter.environment_id = `eq:${filterDomain?.id}`;
         }
         setFilterParams(filter);
-    }, [selectedDomain, globalDomain, selectedAssetGroupId]);
+    }, [selectedEnvironment, globalEnvironment, selectedAssetGroupId]);
 
-    const selectorLabelStyles = { display: { xs: 'none', xl: 'flex' } };
+    const selectorLabelStyles: HTMLProps<HTMLElement>['className'] = 'flex max-sm:hidden';
 
     return (
-        <Box height={'100%'} padding={theme.spacing(2, 4)}>
+        <div className='h-full py-4 px-8'>
             <Grid container height={'100%'} spacing={2}>
                 <Grid item xs={3} md={3}>
-                    <Box component={Paper} elevation={0} marginBottom={1}>
-                        <Grid container>
-                            <Grid item sm={4} sx={selectorLabelStyles} alignItems={'center'} paddingLeft={3}>
+                    <div className='mb-2'>
+                        <Grid container className='bg-neutral-2'>
+                            <Grid item sm={4} className={selectorLabelStyles} alignItems={'center'} paddingLeft={3}>
                                 <Typography variant='button'>Group:</Typography>
                             </Grid>
                             <Grid item xs={12} xl={8}>
-                                <DropdownSelector
-                                    options={listAssetGroups.data ? mapAssetGroups(listAssetGroups.data) : []}
-                                    selectedText={getAssetGroupSelectorLabel()}
-                                    onChange={handleAssetGroupSelectorChange}
-                                    fullWidth
-                                />
+                                <div className='p-2'>
+                                    <DropdownSelector
+                                        variant='primary'
+                                        options={listAssetGroups.data ? mapAssetGroups(listAssetGroups.data) : []}
+                                        selectedText={getAssetGroupSelectorLabel()}
+                                        onChange={handleAssetGroupSelectorChange}
+                                    />
+                                </div>
                             </Grid>
-                            <Grid item xs={4} sx={selectorLabelStyles} alignItems={'center'} paddingLeft={3}>
+                            <Grid item xs={4} className={selectorLabelStyles} alignItems={'center'} paddingLeft={3}>
                                 <Typography variant='button'>Environment:</Typography>
                             </Grid>
-                            <Grid item xs={12} xl={8}>
-                                <DataSelector
-                                    value={selectedDomain || globalDomain || { type: null, id: null }}
+                            <Grid item xs={12} xl={8} className='p-2'>
+                                <SimpleEnvironmentSelector
+                                    selected={selectedEnvironment || globalEnvironment || { type: null, id: null }}
                                     errorMessage={domainSelectorErrorMessage}
-                                    onChange={(selection: SelectedDomain) => setSelectedDomain({ ...selection })}
-                                    fullWidth={true}
+                                    variant={'primary'}
+                                    onSelect={handleSelect}
                                 />
                             </Grid>
                         </Grid>
-                    </Box>
+                    </div>
                     <AssetGroupFilters
                         filterParams={filterParams}
                         handleFilterChange={handleFilterChange}
@@ -170,6 +176,7 @@ const GroupManagementContent: FC<{
                             assetGroup={selectedAssetGroup}
                             filter={filterParams}
                             memberCounts={memberCounts}
+                            isEditable={userHasEditPermissions}
                         />
                     )}
                 </Grid>
@@ -183,22 +190,19 @@ const GroupManagementContent: FC<{
                 </Grid>
                 <Grid item xs={4} md={3} height={'100%'}>
                     {/* CSS calc accounts for the height of the link button */}
-                    <Box sx={{ maxHeight: 'calc(100% - 45px)', overflow: 'auto' }}>{entityPanelComponent}</Box>
+                    <div className='max-h-[calc(100%-45px)] overflow-auto'>{entityPanelComponent}</div>
                     {showExplorePageLink && (
                         <Button
                             data-testid='group-management_explore-link'
-                            variant='contained'
-                            disableElevation
-                            fullWidth
-                            sx={{ borderRadius: '4px', marginTop: '8px' }}
-                            onClick={onShowNodeInExplore}
-                            startIcon={<FontAwesomeIcon icon={faExternalLink} />}>
-                            Open in Explore
+                            style={{ borderRadius: '4px', marginTop: '8px', width: '100%' }}
+                            onClick={onShowNodeInExplore}>
+                            <FontAwesomeIcon icon={faExternalLink} />
+                            <Typography ml='8px'>Open in Explore</Typography>
                         </Button>
                     )}
                 </Grid>
             </Grid>
-        </Box>
+        </div>
     );
 };
 

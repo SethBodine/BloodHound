@@ -22,27 +22,43 @@ const (
 
 	// Cookie Keys
 	AuthTokenCookieName = "token"
+	AuthStateCookieName = "state"
+	AuthPKCECookieName  = "pkce"
 
 	// UserInterfacePath is the static path to the UI landing page
 	UserInterfacePath = "/ui"
+	UserLoginPath     = "/ui/login"
 	UserDisabledPath  = "/ui/user-disabled"
 
 	// Authorization schemes
 	AuthorizationSchemeBHESignature = "bhesignature"
 	AuthorizationSchemeBearer       = "bearer"
 
+	// Form parameters
+	FormParameterState = "state"
+	FormParameterCode  = "code"
+
 	// Query parameters
-	QueryParameterSortBy         = "sort_by"
-	QueryParameterHydrateCounts  = "counts"
-	QueryParameterHydrateDomains = "hydrate_domains"
-	QueryParameterHydrateOUs     = "hydrate_ous"
+	QueryParameterSortBy          = "sort_by"
+	QueryParameterIncludeCounts   = "counts"
+	QueryParameterHydrateDomains  = "hydrate_domains"
+	QueryParameterHydrateOUs      = "hydrate_ous"
+	QueryParameterScope           = "scope"
+	QueryParameterFindingType     = "finding"
+	QueryParameterAssetGroupTagId = "asset_group_tag_id"
+	QueryParameterEnvironments    = "environments"
+	QueryParameterSchemas         = "schemas"
 
 	// URI path parameters
 	URIPathVariableApplicationConfigurationParameter = "parameter"
 	URIPathVariableAssetGroupID                      = "asset_group_id"
 	URIPathVariableAssetGroupSelectorID              = "asset_group_selector_id"
+	URIPathVariableAssetGroupTagID                   = "asset_group_tag_id"
+	URIPathVariableAssetGroupTagSelectorID           = "asset_group_tag_selector_id"
+	URIPathVariableAssetGroupTagMemberID             = "asset_group_tag_member_id"
 	URIPathVariableAttackPathID                      = "attack_path_id"
 	URIPathVariableClientID                          = "client_id"
+	URIPathVariableDataType                          = "data_type"
 	URIPathVariableDomainID                          = "domain_id"
 	URIPathVariableEventID                           = "event_id"
 	URIPathVariableFeatureID                         = "feature_id"
@@ -52,10 +68,11 @@ const (
 	URIPathVariablePlatformID                        = "platform_id"
 	URIPathVariableRoleID                            = "role_id"
 	URIPathVariableSAMLProviderID                    = "saml_provider_id"
-	URIPathVariableServiceProviderName               = "saml_provider_name"
 	URIPathVariableTaskID                            = "task_id"
 	URIPathVariableTenantID                          = "tenant_id"
 	URIPathVariableTokenID                           = "token_id"
 	URIPathVariableUserID                            = "user_id"
 	URIPathVariableSavedQueryID                      = "saved_query_id"
+	URIPathVariableSSOProviderID                     = "sso_provider_id"
+	URIPathVariableSSOProviderSlug                   = "sso_provider_slug"
 )

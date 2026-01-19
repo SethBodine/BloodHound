@@ -1,24 +1,29 @@
 // Copyright 2023 Specter Ops, Inc.
-// 
+//
 // Licensed under the Apache License, Version 2.0
 // you may not use this file except in compliance with the License.
 // You may obtain a copy of the License at
-// 
+//
 //     http://www.apache.org/licenses/LICENSE-2.0
-// 
+//
 // Unless required by applicable law or agreed to in writing, software
 // distributed under the License is distributed on an "AS IS" BASIS,
 // WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
 // See the License for the specific language governing permissions and
 // limitations under the License.
-// 
+//
 // SPDX-License-Identifier: Apache-2.0
 
 package bloodhoundgraph
 
 import (
-	"github.com/specterops/bloodhound/analysis"
-	"github.com/specterops/bloodhound/dawgs/graph"
+	"fmt"
+
+	"github.com/specterops/bloodhound/cmd/api/src/model"
+	"github.com/specterops/bloodhound/packages/go/analysis"
+	"github.com/specterops/bloodhound/packages/go/graphschema"
+	"github.com/specterops/bloodhound/packages/go/graphschema/common"
+	"github.com/specterops/dawgs/graph"
 )
 
 const (
@@ -26,11 +31,13 @@ const (
 	defaultNodeBackgroundColor = "rgba(255,255,255,0.9)"
 	defaultNodeFontSize        = 14
 	defaultRelationshipColor   = "3a5464"
+	fontAwesomePrefix          = "fas"
 )
 
 func NodeToBloodHoundGraph(node *graph.Node) BloodHoundGraphNode {
 	var (
 		nodeKindLabel       = analysis.GetNodeKindDisplayLabel(node)
+		name, _             = node.Properties.GetWithFallback(common.Name.String(), graphschema.DefaultMissingName, common.DisplayName.String(), common.ObjectID.String()).String()
 		bloodHoundGraphNode = BloodHoundGraphNode{
 			BloodHoundGraphItem: &BloodHoundGraphItem{
 				Data: getNodeDisplayProperties(node),
@@ -40,7 +47,7 @@ func NodeToBloodHoundGraph(node *graph.Node) BloodHoundGraphNode {
 				Color: defaultNodeBorderColor,
 			},
 			Label: &BloodHoundGraphNodeLabel{
-				Text:            getNodeName(node),
+				Text:            name,
 				BackgroundColor: defaultNodeBackgroundColor,
 				FontSize:        defaultNodeFontSize,
 				Center:          true,
@@ -51,6 +58,24 @@ func NodeToBloodHoundGraph(node *graph.Node) BloodHoundGraphNode {
 	bloodHoundGraphNode.SetIcon(nodeKindLabel)
 	bloodHoundGraphNode.SetBackground(nodeKindLabel)
 
+	return bloodHoundGraphNode
+}
+
+func NodeToBloodHoundGraphWithOpenGraph(node *graph.Node, customNodeKindMap model.CustomNodeKindMap) BloodHoundGraphNode {
+	bloodHoundGraphNode := NodeToBloodHoundGraph(node)
+
+	if len(node.Kinds) != 0 {
+		// Custom icon rendering is based off of the first Kind in the Kinds array
+		iconKind := node.Kinds[0]
+		if customNodeConfig, ok := customNodeKindMap[iconKind.String()]; ok {
+			bloodHoundGraphNode.SetNodeType(iconKind)
+
+			bloodHoundGraphNode.FontIcon = &BloodHoundGraphFontIcon{
+				Text: fmt.Sprintf("%s %s", fontAwesomePrefix, customNodeConfig.Icon.Name),
+			}
+			bloodHoundGraphNode.Color = customNodeConfig.Icon.Color
+		}
+	}
 	return bloodHoundGraphNode
 }
 
@@ -77,13 +102,19 @@ func RelationshipToBloodHoundGraph(rel *graph.Relationship) BloodHoundGraphLink 
 	}
 }
 
-func NodeSetToBloodHoundGraph(nodes graph.NodeSet) map[string]any {
+func NodeSetToBloodHoundGraph(nodes graph.NodeSet, openGraphSearchEnabled bool, customNodeKinds model.CustomNodeKindMap) map[string]any {
 	result := make(map[string]any, nodes.Len())
 
-	for _, node := range nodes {
-		result[node.ID.String()] = NodeToBloodHoundGraph(node)
-	}
+	if openGraphSearchEnabled {
+		for _, node := range nodes {
+			result[node.ID.String()] = NodeToBloodHoundGraphWithOpenGraph(node, customNodeKinds)
+		}
+	} else {
+		for _, node := range nodes {
+			result[node.ID.String()] = NodeToBloodHoundGraph(node)
+		}
 
+	}
 	return result
 }
 

@@ -14,16 +14,20 @@
 //
 // SPDX-License-Identifier: Apache-2.0
 
-import { fireEvent, render } from '@testing-library/react';
+import { fireEvent } from '@testing-library/react';
+import { rest } from 'msw';
+import { setupServer } from 'msw/node';
+import { render } from '../../test-utils';
 import SearchCurrentNodes, { NO_RESULTS_TEXT } from './SearchCurrentNodes';
-import { GraphNodes } from './types';
+import { GraphRecords } from './types';
 
-const nodes: GraphNodes = {
+const nodes: GraphRecords = {
     '1': {
         label: 'computer_node',
         kind: 'Computer',
         objectId: '001',
         isTierZero: false,
+        isOwnedObject: false,
         lastSeen: '',
     },
     '2': {
@@ -31,6 +35,7 @@ const nodes: GraphNodes = {
         kind: 'User',
         objectId: '002',
         isTierZero: false,
+        isOwnedObject: false,
         lastSeen: '',
     },
     '3': {
@@ -38,9 +43,35 @@ const nodes: GraphNodes = {
         kind: 'Group',
         objectId: '003',
         isTierZero: false,
+        isOwnedObject: false,
         lastSeen: '',
     },
+    rel_2_MemberOf_3: {
+        label: {
+            text: 'MemberOf',
+        },
+        id1: '2',
+        id2: '3',
+        end2: {
+            arrow: true,
+        },
+    },
 };
+
+const server = setupServer(
+    rest.get(`/api/v2/custom-nodes`, async (_req, res, ctx) => {
+        return res(
+            ctx.json({
+                data: [],
+            })
+        );
+    })
+);
+beforeAll(() => server.listen());
+afterEach(() => {
+    server.resetHandlers();
+});
+afterAll(() => server.close());
 
 const RESULT_ID = 'explore_search_result-list-item';
 

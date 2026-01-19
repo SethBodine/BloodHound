@@ -14,15 +14,15 @@
 //
 // SPDX-License-Identifier: Apache-2.0
 
+import { Box, Link, List, ListItem, Typography } from '@mui/material';
 import { FC } from 'react';
-import { Typography, Link, List, ListItem, Box } from '@mui/material';
-import { useHelpTextStyles } from '../utils';
+import { cn } from '../../../utils';
+import { hasChildCodeElementsClasses } from '../utils';
 
 const WindowsAbuse: FC = () => {
-    const classes = useHelpTextStyles();
     const step1 = (
         <>
-            <Typography variant='body2' className={classes.containsCodeEl}>
+            <Typography variant='body2'>
                 <b>Step 1: </b>Create .exe version of Certipy.
                 <br />
                 <br />
@@ -31,7 +31,7 @@ const WindowsAbuse: FC = () => {
                 Windows computer where Python is not installed:
             </Typography>
             <Typography component={'pre'}>{'pyinstaller ./Certipy.spec'}</Typography>
-            <Typography variant='body2' className={classes.containsCodeEl}>
+            <Typography variant='body2' className={hasChildCodeElementsClasses}>
                 The Certipy.exe will be in the <code>dist</code> folder.
             </Typography>
         </>
@@ -39,7 +39,7 @@ const WindowsAbuse: FC = () => {
 
     const step2 = (
         <>
-            <Typography variant='body2' className={classes.containsCodeEl}>
+            <Typography variant='body2' className={hasChildCodeElementsClasses}>
                 <b>Step 2: </b> Set UPN of victim to targeted principal's <code>sAMAccountName</code> followed by @ and
                 the domain name.
                 <br />
@@ -54,7 +54,7 @@ const WindowsAbuse: FC = () => {
 
     const step3 = (
         <>
-            <Typography variant='body2' className={classes.containsCodeEl} sx={{ marginBottom: '-8px' }}>
+            <Typography variant='body2' className={cn(hasChildCodeElementsClasses, '-mb-2')}>
                 <b>Step 3: </b>Check if <code>mail</code> attribute of victim must be set and set it if required.
                 <br />
                 <br />
@@ -90,11 +90,7 @@ const WindowsAbuse: FC = () => {
     );
 
     const step4 = (
-        <Box
-            sx={{
-                borderRadius: '4px',
-                backgroundColor: '#eee',
-            }}>
+        <Box>
             <Typography variant='body2'>
                 <b>Step 4: </b>Obtain a session as victim.
                 <br />
@@ -106,30 +102,30 @@ const WindowsAbuse: FC = () => {
                 Credentials attack (see{' '}
                 <Link
                     target='blank'
-                    rel='noopener'
-                    href='https://support.bloodhoundenterprise.io/hc/en-us/articles/17358104809499-AddKeyCredentialLink'>
+                    rel='noopener noreferrer'
+                    href='https://bloodhound.specterops.io/resources/edges/add-key-credential-link'>
                     AddKeyCredentialLink edge documentation
                 </Link>
                 ). Alternatively, you can obtain a session as SYSTEM on the host, which allows you to interact with AD
                 as the computer account, by abusing control over the computer AD object (see{' '}
                 <Link
                     target='blank'
-                    rel='noopener'
-                    href='https://support.bloodhoundenterprise.io/hc/en-us/articles/17312347318043-GenericAll'>
+                    rel='noopener noreferrer'
+                    href='https://bloodhound.specterops.io/resources/edges/generic-all'>
                     GenericAll edge documentation
                 </Link>
                 ).
             </Typography>
-            <Typography variant='body2' className={classes.containsCodeEl}>
+            <Typography variant='body2'>
                 If the victim is a user, you have the following options for obtaining the credentials:
             </Typography>
-            <List sx={{ fontSize: '12px' }}>
+            <List className='text-xs'>
                 <ListItem>
                     Shadow Credentials attack (see{' '}
                     <Link
                         target='blank'
-                        rel='noopener'
-                        href='https://support.bloodhoundenterprise.io/hc/en-us/articles/17358104809499-AddKeyCredentialLink'>
+                        rel='noopener noreferrer'
+                        href='https://bloodhound.specterops.io/resources/edges/add-key-credential-link'>
                         AddKeyCredentialLink edge documentation
                     </Link>
                     )
@@ -138,8 +134,8 @@ const WindowsAbuse: FC = () => {
                     Password reset (see{' '}
                     <Link
                         target='blank'
-                        rel='noopener'
-                        href='https://support.bloodhoundenterprise.io/hc/en-us/articles/17223286750747-ForceChangePassword'>
+                        rel='noopener noreferrer'
+                        href='https://bloodhound.specterops.io/resources/edges/force-change-password'>
                         ForceChangePassword edge documentation
                     </Link>
                     )
@@ -148,8 +144,8 @@ const WindowsAbuse: FC = () => {
                     Targeted Kerberoasting (see{' '}
                     <Link
                         target='blank'
-                        rel='noopener'
-                        href='https://support.bloodhoundenterprise.io/hc/en-us/articles/17222775975195-WriteSPN'>
+                        rel='noopener noreferrer'
+                        href='https://bloodhound.specterops.io/resources/edges/write-spn'>
                         WriteSPN edge documentation
                     </Link>
                     )

@@ -14,26 +14,26 @@
 //
 // SPDX-License-Identifier: Apache-2.0
 
+import { Box, Link } from '@mui/material';
 import { FC } from 'react';
-import { Link, Box } from '@mui/material';
 
 const References: FC = () => {
     return (
-        <Box sx={{ overflowX: 'auto' }}>
-            <Link target='_blank' rel='noopener' href='https://github.com/BloodHoundAD/BARK'>
+        <Box className='overflow-x-auto'>
+            <Link target='_blank' rel='noopener noreferrer' href='https://github.com/BloodHoundAD/BARK'>
                 Andy Robbins - BARK.ps1
             </Link>
             <br />
             <Link
                 target='_blank'
-                rel='noopener'
+                rel='noopener noreferrer'
                 href='https://www.netspi.com/blog/technical/cloud-penetration-testing/lateral-movement-azure-app-services/'>
                 Karl Fosaaen - Lateral Movement in Azure App Services
             </Link>
             <br />
             <Link
                 target='_blank'
-                rel='noopener'
+                rel='noopener noreferrer'
                 href='https://posts.specterops.io/abusing-azure-app-service-managed-identity-assignments-c3adefccff95'>
                 Andy Robbins - Abusing Azure App Service Managed Identity Assignments
             </Link>

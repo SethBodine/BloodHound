@@ -65,7 +65,7 @@ type ImagePending = { status: 'pending'; image: HTMLImageElement };
 type ImageReady = { status: 'ready' } & Coordinates & Dimensions;
 type ImageType = ImageLoading | ImageError | ImagePending | ImageReady;
 
-export type Glyph = { location: GlyphLocation; image: string; backgroundColor: string };
+export type Glyph = { location: GlyphLocation; image: string; backgroundColor: string; color: string };
 // The numerical values of this enum are used to calculate angle of rotation for the glyph's origin
 export enum GlyphLocation {
     TOP_RIGHT,
@@ -75,6 +75,7 @@ export enum GlyphLocation {
 }
 
 // This class only exists for the return typing of `getNodeCombinedProgram`:
+/* eslint-disable @typescript-eslint/no-unused-vars */
 class AbstractNodeGlyphsProgram extends AbstractNodeProgram {
     constructor(gl: WebGLRenderingContext, renderer: Sigma) {
         super(gl, vertexShaderSource, fragmentShaderSource, POINTS, ATTRIBUTES);
@@ -83,8 +84,8 @@ class AbstractNodeGlyphsProgram extends AbstractNodeProgram {
     process(data: NodeDisplayData & { image?: string }, hidden: boolean, offset: number): void {}
     render(params: RenderParams): void {}
     rebindTexture() {}
-    /* eslint-enable @typescript-eslint/no-empty-function, @typescript-eslint/no-unused-vars */
 }
+/* eslint-enable @typescript-eslint/no-unused-vars */
 
 /**
  * To share the texture between the program instances of the graph and the
@@ -401,8 +402,8 @@ export default function getNodeGlyphsProgram(): typeof AbstractNodeGlyphsProgram
                         data.x,
                         data.y,
                         data.size / 2.4,
-                        glyph.backgroundColor,
-                        data.borderColor ?? data.color,
+                        glyph.backgroundColor, //fill
+                        glyph.color, //border
                         glyph.image,
                         { x, y }
                     );

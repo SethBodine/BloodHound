@@ -14,14 +14,30 @@
 //
 // SPDX-License-Identifier: Apache-2.0
 
-import { List, ListItem, Tooltip, Skeleton } from '@mui/material';
+import { List, ListItem, Skeleton, Tooltip } from '@mui/material';
+import makeStyles from '@mui/styles/makeStyles';
 import memoize from 'memoize-one';
 import React, { memo, useState } from 'react';
-import { areEqual, FixedSizeList, ListChildComponentProps } from 'react-window';
+import { FixedSizeList, ListChildComponentProps, areEqual } from 'react-window';
 import InfiniteLoader from 'react-window-infinite-loader';
 import NodeIcon from '../NodeIcon';
 
 const ITEM_SIZE = 32;
+
+const useStyles = makeStyles((theme) => ({
+    evenItem: {
+        backgroundColor: theme.palette.neutral.secondary,
+        '&:hover': {
+            backgroundColor: theme.palette.neutral.quaternary,
+        },
+    },
+    oddItem: {
+        backgroundColor: theme.palette.neutral.tertiary,
+        '&:hover': {
+            backgroundColor: theme.palette.neutral.quaternary,
+        },
+    },
+}));
 
 const InnerElement = ({ style, ...rest }: any) => (
     <List
@@ -29,6 +45,7 @@ const InnerElement = ({ style, ...rest }: any) => (
         data-testid='infinite-scroll-table'
         disablePadding
         style={{ ...style, overflowX: 'hidden' }}
+        className={style.table}
         {...rest}
     />
 );
@@ -49,10 +66,12 @@ const createItemData = memoize((items, onClick) => ({
     onClick,
 }));
 
-const Row = memo(({ data, index, style }: ListChildComponentProps) => {
+const Row = memo(function Row({ data, index, style }: ListChildComponentProps) {
+    const tableStyle = useStyles();
+
     const { items, onClick } = data;
     const item = items[index];
-    const itemClass = index % 2 ? 'odd-item' : 'even-item';
+    const itemClass = index % 2 ? tableStyle.oddItem : tableStyle.evenItem;
 
     if (item === undefined) {
         return (
@@ -71,32 +90,50 @@ const Row = memo(({ data, index, style }: ListChildComponentProps) => {
         type: item.label || item.kind || '',
     };
 
-    return (
-        <ListItem
-            button
-            className={itemClass}
-            onClick={() => {
-                onClick(normalizedItem);
-            }}
-            style={{
-                ...style,
-                padding: '0 8px',
-            }}
-            data-testid='entity-row'>
-            <NodeIcon nodeType={normalizedItem.type} />
-            <Tooltip title={normalizedItem.name}>
-                <div style={{ minWidth: '0', whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis' }}>
-                    {normalizedItem.name}
-                </div>
-            </Tooltip>
-        </ListItem>
-    );
+    if (onClick) {
+        return (
+            <ListItem
+                className={itemClass}
+                onClick={() => {
+                    onClick(normalizedItem);
+                }}
+                style={{
+                    ...style,
+                    padding: '0 8px',
+                }}
+                data-testid='entity-row'>
+                <NodeIcon nodeType={normalizedItem.type} />
+                <Tooltip title={normalizedItem.name}>
+                    <div style={{ minWidth: '0', whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis' }}>
+                        {normalizedItem.name}
+                    </div>
+                </Tooltip>
+            </ListItem>
+        );
+    } else {
+        return (
+            <ListItem
+                className={itemClass}
+                style={{
+                    ...style,
+                    padding: '0 8px',
+                }}
+                data-testid='entity-row'>
+                <NodeIcon nodeType={normalizedItem.type} />
+                <Tooltip title={normalizedItem.name}>
+                    <div style={{ minWidth: '0', whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis' }}>
+                        {normalizedItem.name}
+                    </div>
+                </Tooltip>
+            </ListItem>
+        );
+    }
 }, areEqual);
 
 const InfiniteScrollingTable: React.FC<InfiniteScrollingTableProps> = ({
     fetchDataCallback,
     itemCount = 1000,
-    onClick = () => {},
+    onClick,
 }) => {
     const [isFetching, setIsFetching] = useState(false);
     const [items, setItems] = useState<Record<number, any>>({});
@@ -134,6 +171,7 @@ const InfiniteScrollingTable: React.FC<InfiniteScrollingTableProps> = ({
                     itemCount={itemCount}
                     itemData={itemData}
                     itemSize={ITEM_SIZE}
+                    outerElementType='summary'
                     onItemsRendered={onItemsRendered}
                     innerElementType={InnerElement}
                     ref={ref}

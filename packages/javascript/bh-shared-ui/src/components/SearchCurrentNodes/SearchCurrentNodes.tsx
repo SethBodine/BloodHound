@@ -14,67 +14,65 @@
 //
 // SPDX-License-Identifier: Apache-2.0
 
-import { Box, List, ListItem, Paper, SxProps, TextField } from '@mui/material';
+import { TextField } from '@mui/material';
 import { useCombobox } from 'downshift';
-import { FC, useEffect, useRef, useState } from 'react';
-import SearchResultItem from '../SearchResultItem';
-import { FlatNode, GraphNodes } from './types';
-import { useOnClickOutside } from '../../hooks';
+import { FlatGraphResponse } from 'js-client-library';
+import { FC, HTMLProps, useCallback, useRef, useState } from 'react';
 import { FixedSizeList } from 'react-window';
+import { useAddKeyBinding, useOnClickOutside } from '../../hooks';
+import { cn } from '../../utils';
+import SearchResultItem from '../SearchResultItem';
+import { FlatNode, GraphRecords } from './types';
 
-export const PLACEHOLDER_TEXT = 'Search Current Results';
+export const PLACEHOLDER_TEXT = 'Search node in results';
 export const NO_RESULTS_TEXT = 'No result found in current results';
 
 const LIST_ITEM_HEIGHT = 38;
-const MAX_CONTAINER_HEIGHT = 350;
+const MAX_CONTAINER_HEIGHT = 320;
 
 const SearchCurrentNodes: FC<{
-    sx?: SxProps;
-    currentNodes: GraphNodes;
+    currentNodes: GraphRecords | FlatGraphResponse;
     onSelect: (node: FlatNode) => void;
-    onClose?: () => void;
-}> = ({ sx, currentNodes, onSelect, onClose }) => {
+    onClose: () => void;
+    className?: HTMLProps<HTMLElement>['className'];
+}> = ({ className = '', currentNodes, onSelect, onClose }) => {
     const containerRef = useRef<HTMLDivElement>(null);
-    const inputRef = useRef<HTMLInputElement>(null);
 
-    const [flatNodeList, setFlatNodeList] = useState<FlatNode[]>([]);
     const [items, setItems] = useState<FlatNode[]>([]);
-    const [selectedNode, setSelectedNode] = useState<FlatNode | null | undefined>(null);
-    const [virtualizationHeight, setVirtualizationHeight] = useState<number>(0);
 
     // Node data is a lot easier to work with in the combobox if we transform to an array of flat objects
-    useEffect(() => {
-        const flatNodeList: FlatNode[] = Object.entries(currentNodes).map(([key, value]) => {
-            return { id: key, ...value };
+    const flatNodeList: FlatNode[] = Object.entries(currentNodes)
+        .filter(([, value]) => {
+            // Filter out edges by testing presence of 'id1' and 'id2'
+            return !('id1' in value && 'id2' in value);
+        })
+        .map(([key, value]) => {
+            if ('objectId' in value) return { id: key, ...value };
+            if ('data' in value)
+                return {
+                    id: key,
+                    objectId: value.data.objectid,
+                    label: value.label.text,
+                    kind: value.data.nodetype || value.data.kind || value.data.primaryKind,
+                };
+            return { id: key, objectId: '', label: 'unknown', kind: 'unknown' };
         });
-        setFlatNodeList(flatNodeList);
-    }, [currentNodes]);
-
-    useEffect(() => inputRef.current?.focus(), []);
-
-    useEffect(() => {
-        if (selectedNode) onSelect(selectedNode);
-    }, [selectedNode, onSelect]);
 
     // Since we are using a virtualized results container, we need to calculate the height for shorter
     // lists to avoid whitespace
-    useEffect(() => {
-        const resultsHeight = LIST_ITEM_HEIGHT * items.length;
-        if (resultsHeight > MAX_CONTAINER_HEIGHT) {
-            setVirtualizationHeight(MAX_CONTAINER_HEIGHT - 10);
-        } else {
-            setVirtualizationHeight(resultsHeight);
-        }
-    }, [items]);
+    let virtualizationHeight = LIST_ITEM_HEIGHT * items.length;
+    if (virtualizationHeight > MAX_CONTAINER_HEIGHT) {
+        virtualizationHeight = MAX_CONTAINER_HEIGHT - 10;
+    }
 
-    useOnClickOutside(containerRef, () => onClose && onClose());
+    useOnClickOutside(containerRef, onClose);
 
-    const { getInputProps, getMenuProps, getComboboxProps, getItemProps, inputValue } = useCombobox({
+    const { getInputProps, getMenuProps, getItemProps, inputValue, highlightedIndex } = useCombobox({
         items,
         onInputValueChange: ({ inputValue }) => {
             const filteredNodes = flatNodeList.filter((node) => {
-                const label = node.label.toLowerCase();
-                const objectId = node.objectId.toLowerCase();
+                const label = node.label?.toLowerCase() || '';
+                const objectId = node.objectId?.toLowerCase() || '';
                 const lowercaseInputValue = inputValue?.toLowerCase() || '';
 
                 if (inputValue === '') return false;
@@ -82,40 +80,45 @@ const SearchCurrentNodes: FC<{
             });
             setItems(filteredNodes);
         },
-        stateReducer: (_state, actionAndChanges) => {
-            const { changes, type } = actionAndChanges;
-            switch (type) {
-                case useCombobox.stateChangeTypes.ItemClick:
-                    if (changes.selectedItem) setSelectedNode(changes.selectedItem);
-                    return { ...changes, inputValue: '' };
-                default:
-                    return changes;
-            }
+        itemToString: (item) => item?.label ?? '',
+        onSelectedItemChange: ({ selectedItem }) => {
+            selectedItem && onSelect(selectedItem);
         },
     });
 
     const Row = ({ index, style }: any) => {
         return (
-            <Box style={style} overflow={'hidden'}>
-                <SearchResultItem
-                    item={items[index]}
-                    index={index}
-                    key={index}
-                    highlightedIndex={0}
-                    keyword={inputValue}
-                    getItemProps={getItemProps}
-                />
-            </Box>
+            <SearchResultItem
+                style={style}
+                item={items[index]}
+                index={index}
+                highlightedIndex={highlightedIndex}
+                key={items[index].id}
+                keyword={inputValue}
+                getItemProps={getItemProps}
+            />
         );
     };
 
+    const inputProps = getInputProps();
+
+    const handleKeyDown = useCallback(
+        (e: KeyboardEvent) => {
+            if (e.code === 'Escape') {
+                onClose();
+            }
+        },
+        [onClose]
+    );
+
+    useAddKeyBinding(handleKeyDown);
+
     return (
         <div ref={containerRef}>
-            <Box component={Paper} {...sx} {...getComboboxProps()}>
-                <Box overflow={'auto'} maxHeight={MAX_CONTAINER_HEIGHT} marginBottom={items.length === 0 ? 0 : 1}>
-                    <List
+            <div className={cn('bg-neutral-2 shadow-outer-1', className)}>
+                <div className={cn('overflow-auto max-h-80', { 'mb-4': items.length === 0 })}>
+                    <ul
                         data-testid={'current-results-list'}
-                        dense
                         {...getMenuProps({
                             hidden: items.length === 0 && !inputValue,
                             style: { paddingTop: 0 },
@@ -130,22 +133,39 @@ const SearchCurrentNodes: FC<{
                             </FixedSizeList>
                         }
                         {items.length === 0 && inputValue && (
-                            <ListItem disabled sx={{ fontSize: 14 }}>
+                            <li
+                                className='text-sm opacity-70'
+                                {...getItemProps({
+                                    disabled: true,
+                                    'aria-disabled': true,
+                                    label: NO_RESULTS_TEXT,
+                                    item: {
+                                        id: '',
+                                        label: '',
+                                        kind: '',
+                                        objectId: '',
+                                        lastSeen: '',
+                                        isTierZero: false,
+                                        isOwnedObject: false,
+                                        descendent_count: null,
+                                        properties: {},
+                                    },
+                                })}>
                                 {NO_RESULTS_TEXT}
-                            </ListItem>
+                            </li>
                         )}
-                    </List>
-                </Box>
+                    </ul>
+                </div>
                 <TextField
-                    inputRef={inputRef}
+                    inputRef={(ref) => {
+                        ref?.focus();
+                    }}
                     placeholder={PLACEHOLDER_TEXT}
                     variant='outlined'
-                    size='small'
-                    fullWidth
-                    {...getInputProps()}
-                    InputProps={{ sx: { fontSize: 14 } }}
+                    {...inputProps}
+                    className={cn('text-sm w-full', inputProps.className)}
                 />
-            </Box>
+            </div>
         </div>
     );
 };

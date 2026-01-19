@@ -19,17 +19,16 @@ package analysis
 import (
 	"context"
 	"fmt"
-	"slices"
-	"strings"
+	"sync/atomic"
 
-	"github.com/specterops/bloodhound/dawgs/graph"
-	"github.com/specterops/bloodhound/dawgs/ops"
-	"github.com/specterops/bloodhound/dawgs/query"
-	"github.com/specterops/bloodhound/graphschema/ad"
-	"github.com/specterops/bloodhound/graphschema/azure"
-	"github.com/specterops/bloodhound/graphschema/common"
-	"github.com/specterops/bloodhound/log"
-	"github.com/specterops/bloodhound/slicesext"
+	"github.com/specterops/bloodhound/packages/go/graphschema"
+	"github.com/specterops/bloodhound/packages/go/graphschema/ad"
+	"github.com/specterops/bloodhound/packages/go/graphschema/azure"
+	"github.com/specterops/bloodhound/packages/go/graphschema/common"
+	"github.com/specterops/bloodhound/packages/go/slicesext"
+	"github.com/specterops/dawgs/graph"
+	"github.com/specterops/dawgs/ops"
+	"github.com/specterops/dawgs/query"
 )
 
 const (
@@ -37,23 +36,20 @@ const (
 	MaximumDatabaseParallelWorkers = 6
 )
 
-var (
-	metaKind       = graph.StringKind("Meta")
-	metaDetailKind = graph.StringKind("MetaDetail")
-)
+type CompositionCounter struct {
+	counter atomic.Int64
+}
 
-func AllTaggedNodesFilter(additionalFilter graph.Criteria) graph.Criteria {
-	var (
-		filters = []graph.Criteria{
-			query.IsNotNull(query.NodeProperty(common.SystemTags.String())),
-		}
-	)
+func (c *CompositionCounter) Get() int64 {
+	ret := c.counter.Load()
+	c.counter.Add(1)
+	return ret
+}
 
-	if additionalFilter != nil {
-		filters = append(filters, additionalFilter)
+func NewCompositionCounter() CompositionCounter {
+	return CompositionCounter{
+		counter: atomic.Int64{},
 	}
-
-	return query.And(filters...)
 }
 
 func GetNodeKindDisplayLabel(node *graph.Node) string {
@@ -61,64 +57,11 @@ func GetNodeKindDisplayLabel(node *graph.Node) string {
 }
 
 func GetNodeKind(node *graph.Node) graph.Kind {
-	var (
-		resultKind = graph.StringKind(NodeKindUnknown)
-		baseKind   = resultKind
-	)
-
-	for _, kind := range node.Kinds {
-		// If this is a BHE meta kind, return early
-		if kind.Is(metaKind, metaDetailKind) {
-			return metaKind
-		} else if kind.Is(ad.Entity, azure.Entity) {
-			baseKind = kind
-		} else if kind.Is(ad.LocalGroup) {
-			// Allow ad.LocalGroup to overwrite NodeKindUnknown, but nothing else
-			if resultKind.String() == NodeKindUnknown {
-				resultKind = kind
-			}
-		} else if slices.Contains(ValidKinds(), kind) {
-			resultKind = kind
-		}
-	}
-
-	if resultKind.String() == NodeKindUnknown {
-		return baseKind
-	} else {
-		return resultKind
-	}
-}
-
-func ClearSystemTags(ctx context.Context, db graph.Database) error {
-	defer log.Measure(log.LevelInfo, "ClearSystemTagsIncludeMeta")()
-
-	var (
-		props = graph.NewProperties()
-	)
-
-	props.Delete(common.SystemTags.String())
-
-	return db.WriteTransaction(ctx, func(tx graph.Transaction) error {
-		if ids, err := ops.FetchNodeIDs(tx.Nodes().Filter(AllTaggedNodesFilter(nil))); err != nil {
-			return err
-		} else {
-			return tx.Nodes().Filterf(func() graph.Criteria {
-				return query.InIDs(query.NodeID(), ids...)
-			}).Update(props)
-		}
-	})
-}
-
-func ValidKinds() []graph.Kind {
-	var (
-		metaKinds = []graph.Kind{metaKind, metaDetailKind}
-	)
-
-	return slicesext.Concat(ad.Nodes(), ad.Relationships(), azure.NodeKinds(), azure.Relationships(), metaKinds)
+	return graphschema.PrimaryNodeKind(node.Kinds)
 }
 
 func ParseKind(rawKind string) (graph.Kind, error) {
-	for _, kind := range ValidKinds() {
+	for kind := range graphschema.ValidKinds {
 		if kind.String() == rawKind {
 			return kind, nil
 		}
@@ -129,7 +72,7 @@ func ParseKind(rawKind string) (graph.Kind, error) {
 
 func ParseKinds(rawKinds ...string) (graph.Kinds, error) {
 	if len(rawKinds) == 0 {
-		return graph.Kinds{ad.Entity, azure.Entity}, nil
+		return graph.Kinds{}, nil
 	}
 
 	return slicesext.MapWithErr(rawKinds, ParseKind)
@@ -195,127 +138,12 @@ func ExpandGroupMembershipPaths(tx graph.Transaction, candidates graph.NodeSet) 
 	return groupMemberPaths, nil
 }
 
-func ExpandGroupMembership(tx graph.Transaction, candidates graph.NodeSet) (graph.NodeSet, error) {
-	if paths, err := ExpandGroupMembershipPaths(tx, candidates); err != nil {
-		return nil, err
-	} else {
-		return paths.AllNodes(), nil
-	}
-}
-
-func GetLAPSSyncers(tx graph.Transaction, domain *graph.Node) ([]*graph.Node, error) {
-	var (
-		getChangesQuery         = fromEntityToEntityWithRelationshipKind(tx, domain, ad.GetChanges, false)
-		getChangesFilteredQuery = fromEntityToEntityWithRelationshipKind(tx, domain, ad.GetChangesInFilteredSet, false)
-	)
-
-	if getChangesNodes, err := ops.FetchStartNodes(getChangesQuery); err != nil {
-		return nil, err
-	} else if getChangesNodeMembers, err := ExpandGroupMembership(tx, getChangesNodes); err != nil {
-		return nil, err
-	} else if getChangesFilteredNodes, err := ops.FetchStartNodes(getChangesFilteredQuery); err != nil {
-		return nil, err
-	} else if getChangesFilteredNodeMembers, err := ExpandGroupMembership(tx, getChangesFilteredNodes); err != nil {
-		return nil, err
-	} else {
-		// Collect and filter the bitmap
-		getChangesNodes.AddSet(getChangesNodeMembers)
-		getChangesFilteredNodes.AddSet(getChangesFilteredNodeMembers)
-
-		syncerBitmap := graph.NodeSetToBitmap(getChangesNodes)
-		syncerBitmap.And(graph.NodeSetToBitmap(getChangesFilteredNodes))
-
-		var (
-			nodeIDs = syncerBitmap.ToArray()
-			nodes   = make([]*graph.Node, len(nodeIDs))
-		)
-
-		for idx, rawID := range syncerBitmap.ToArray() {
-			// Since the bitmap is an intersection of both node sets each set is guaranteed to have a valid reference
-			// to the node
-			nodes[idx] = getChangesNodes.Get(graph.ID(int64(rawID)))
-		}
-
-		return nodes, nil
-	}
-}
-
-func GetDCSyncers(tx graph.Transaction, domain *graph.Node, filterTierZero bool) ([]*graph.Node, error) {
-	var (
-		getChangesQuery    = fromEntityToEntityWithRelationshipKind(tx, domain, ad.GetChanges, filterTierZero)
-		getChangesAllQuery = fromEntityToEntityWithRelationshipKind(tx, domain, ad.GetChangesAll, filterTierZero)
-	)
-
-	if getChangesNodes, err := ops.FetchStartNodes(getChangesQuery); err != nil {
-		return nil, err
-	} else if getChangesNodeMembers, err := ExpandGroupMembership(tx, getChangesNodes); err != nil {
-		return nil, err
-	} else if getChangesAllNodes, err := ops.FetchStartNodes(getChangesAllQuery); err != nil {
-		return nil, err
-	} else if getChangesAllNodeMembers, err := ExpandGroupMembership(tx, getChangesAllNodes); err != nil {
-		return nil, err
-	} else {
-		// Collect and filter the bitmap
-		getChangesNodes.AddSet(getChangesNodeMembers)
-		getChangesAllNodes.AddSet(getChangesAllNodeMembers)
-
-		if filterTierZero {
-			//Do a second pass to filter out T0 nodes that might have ended up through group membership
-			for _, node := range getChangesNodes {
-				if systemTags, err := node.Properties.Get(common.SystemTags.String()).String(); err != nil {
-					if graph.IsErrPropertyNotFound(err) {
-						continue
-					}
-
-					return nil, err
-				} else if strings.Contains(systemTags, ad.AdminTierZero) {
-					getChangesNodes.Remove(node.ID)
-				}
-			}
-
-			for _, node := range getChangesAllNodes {
-				if systemTags, err := node.Properties.Get(common.SystemTags.String()).String(); err != nil {
-					if graph.IsErrPropertyNotFound(err) {
-						continue
-					}
-
-					return nil, err
-				} else if strings.Contains(systemTags, ad.AdminTierZero) {
-					getChangesNodes.Remove(node.ID)
-				}
-			}
-		}
-
-		dcSyncerBitmap := graph.NodeSetToBitmap(getChangesNodes)
-		dcSyncerBitmap.And(graph.NodeSetToBitmap(getChangesAllNodes))
-
-		var (
-			nodeIDs = dcSyncerBitmap.ToArray()
-			nodes   = make([]*graph.Node, len(nodeIDs))
-		)
-
-		for idx, rawID := range dcSyncerBitmap.ToArray() {
-			// Since the bitmap is an intersection of both node sets each set is guaranteed to have a valid reference
-			// to the node
-			nodes[idx] = getChangesNodes.Get(graph.ID(int64(rawID)))
-		}
-
-		return nodes, nil
-	}
-}
-
-func fromEntityToEntityWithRelationshipKind(tx graph.Transaction, target *graph.Node, relKind graph.Kind, filterTierZero bool) graph.RelationshipQuery {
+func FromEntityToEntityWithRelationshipKind(tx graph.Transaction, target *graph.Node, relKind graph.Kind) graph.RelationshipQuery {
 	return tx.Relationships().Filterf(func() graph.Criteria {
 		filters := []graph.Criteria{
 			query.Kind(query.Start(), ad.Entity),
 			query.Kind(query.Relationship(), relKind),
 			query.Equals(query.EndID(), target.ID),
-		}
-
-		if filterTierZero {
-			filters = append(filters, query.Not(
-				query.StringContains(query.StartProperty(common.SystemTags.String()), ad.AdminTierZero),
-			))
 		}
 
 		return query.And(filters...)

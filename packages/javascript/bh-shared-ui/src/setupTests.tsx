@@ -15,6 +15,7 @@
 // SPDX-License-Identifier: Apache-2.0
 
 /* eslint-disable @typescript-eslint/no-unused-vars */
+// organize-imports-ignore
 import matchers from '@testing-library/jest-dom/matchers';
 import { expect } from 'vitest';
 //@ts-ignore
@@ -27,6 +28,21 @@ import 'whatwg-fetch';
 expect.extend(matchers);
 
 // mocks
+
+beforeAll(() => {
+    // Radix Select relies on pointer events + scroll positioning under the hood
+    // (Popper + focus management). In JSDOM, those methods (scrollIntoView,
+    // hasPointerCapture, releasePointerCapture) don’t exist by default, so Radix
+    // crashes silently when trying to open the select dropdown.
+    const g = globalThis as any;
+    const ElementCtor = g.Element as typeof Element | undefined;
+    if (!ElementCtor?.prototype) return;
+    const proto = ElementCtor.prototype as any;
+    if (typeof proto.scrollIntoView !== 'function') proto.scrollIntoView = vi.fn();
+    if (typeof proto.hasPointerCapture !== 'function') proto.hasPointerCapture = vi.fn();
+    if (typeof proto.releasePointerCapture !== 'function') proto.releasePointerCapture = vi.fn();
+});
+
 beforeEach(() => {
     vi.clearAllMocks();
 });
@@ -39,3 +55,10 @@ vi.mock('@fortawesome/react-fontawesome', () => ({
         return <span>{props.icon.iconName}</span>;
     }),
 }));
+
+const ResizeObserverMock = vi.fn(() => ({
+    observe: vi.fn(),
+    unobserve: vi.fn(),
+    disconnect: vi.fn(),
+}));
+vi.stubGlobal('ResizeObserver', ResizeObserverMock);

@@ -14,8 +14,8 @@
 //
 // SPDX-License-Identifier: Apache-2.0
 
+import { List, ListItem, ListItemText, Typography } from '@mui/material';
 import { FC } from 'react';
-import { Typography, List, ListItem, ListItemText } from '@mui/material';
 
 const WindowsAbuse: FC = () => {
     return (
@@ -40,7 +40,13 @@ const WindowsAbuse: FC = () => {
             <List>
                 <ListItem>
                     <ListItemText>
-                        Build GMSAPasswordReader.exe from its source: https://github.com/rvazarkar/GMSAPasswordReader
+                        Build GMSAPasswordReader.exe from its source:{' '}
+                        <a
+                            target='_blank'
+                            rel='noopener noreferrer'
+                            href='https://github.com/rvazarkar/GMSAPasswordReader'>
+                            https://github.com/rvazarkar/GMSAPasswordReader
+                        </a>
                     </ListItemText>
                 </ListItem>
                 <ListItem>

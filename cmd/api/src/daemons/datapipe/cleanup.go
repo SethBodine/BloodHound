@@ -20,9 +20,11 @@ package datapipe
 
 import (
 	"context"
-	"github.com/specterops/bloodhound/log"
+	"fmt"
+	"log/slog"
 	"os"
 	"path/filepath"
+	"strings"
 	"sync"
 )
 
@@ -60,7 +62,7 @@ func NewOrphanFileSweeper(fileOps FileOperations, tempDirectoryRootPath string) 
 	return &OrphanFileSweeper{
 		lock:                  &sync.Mutex{},
 		fileOps:               fileOps,
-		tempDirectoryRootPath: tempDirectoryRootPath,
+		tempDirectoryRootPath: strings.TrimSuffix(tempDirectoryRootPath, string(filepath.Separator)),
 	}
 }
 
@@ -77,15 +79,27 @@ func (s *OrphanFileSweeper) Clear(ctx context.Context, expectedFileNames []strin
 	// Release the lock once finished
 	defer s.lock.Unlock()
 
+	slog.InfoContext(ctx, fmt.Sprintf("Running OrphanFileSweeper for path %s", s.tempDirectoryRootPath))
+	slog.DebugContext(ctx, fmt.Sprintf("OrphanFileSweeper expected names %v", expectedFileNames))
+
 	if dirEntries, err := s.fileOps.ReadDir(s.tempDirectoryRootPath); err != nil {
-		log.Errorf("Failed reading work directory %s: %v", s.tempDirectoryRootPath, err)
+		slog.ErrorContext(ctx, fmt.Sprintf("Failed reading work directory %s: %v", s.tempDirectoryRootPath, err))
 	} else {
 		numDeleted := 0
 
 		// Remove expected files from the deletion list
 		for _, expectedFileName := range expectedFileNames {
+			expectedDir, expectedFN := filepath.Split(expectedFileName)
+			if expectedDir != "" {
+				expectedDir = strings.TrimSuffix(expectedDir, string(filepath.Separator))
+				if expectedDir != s.tempDirectoryRootPath {
+					slog.WarnContext(ctx, fmt.Sprintf("directory '%s' for expectedFileName '%s' does not match tempDirectoryRootPath '%s': skipping", expectedDir, expectedFileName, s.tempDirectoryRootPath))
+					continue
+				}
+			}
 			for idx, dirEntry := range dirEntries {
-				if expectedFileName == dirEntry.Name() {
+				if expectedFN == dirEntry.Name() {
+					slog.DebugContext(ctx, fmt.Sprintf("skipping expected file %s", expectedFN))
 					dirEntries = append(dirEntries[:idx], dirEntries[idx+1:]...)
 				}
 			}
@@ -97,17 +111,18 @@ func (s *OrphanFileSweeper) Clear(ctx context.Context, expectedFileNames []strin
 				break
 			}
 
+			slog.InfoContext(ctx, fmt.Sprintf("Removing orphaned file %s", orphanedDirEntry.Name()))
 			fullPath := filepath.Join(s.tempDirectoryRootPath, orphanedDirEntry.Name())
 
 			if err := s.fileOps.RemoveAll(fullPath); err != nil {
-				log.Errorf("Failed removing orphaned file %s: %v", fullPath, err)
+				slog.ErrorContext(ctx, fmt.Sprintf("Failed removing orphaned file %s: %v", fullPath, err))
 			}
 
 			numDeleted += 1
 		}
 
 		if numDeleted > 0 {
-			log.Infof("Finished removing %d orphaned ingest files", numDeleted)
+			slog.InfoContext(ctx, fmt.Sprintf("Finished removing %d orphaned ingest files", numDeleted))
 		}
 	}
 }

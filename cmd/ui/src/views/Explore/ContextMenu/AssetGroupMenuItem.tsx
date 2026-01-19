@@ -1,4 +1,4 @@
-// Copyright 2023 Specter Ops, Inc.
+// Copyright 2025 Specter Ops, Inc.
 //
 // Licensed under the Apache License, Version 2.0
 // you may not use this file except in compliance with the License.
@@ -14,21 +14,21 @@
 //
 // SPDX-License-Identifier: Apache-2.0
 
-import { Button, Dialog, DialogActions, DialogContent, DialogTitle, MenuItem } from '@mui/material';
-import { apiClient, useNotifications } from 'bh-shared-ui';
+import { Button } from '@bloodhoundenterprise/doodleui';
+import { Dialog, DialogActions, DialogContent, DialogTitle, MenuItem } from '@mui/material';
+import { NodeResponse, apiClient, useExploreGraph, useExploreSelectedItem, useNotifications } from 'bh-shared-ui';
 import { FC, useState } from 'react';
 import { useMutation, useQuery } from 'react-query';
 import { selectTierZeroAssetGroupId } from 'src/ducks/assetgroups/reducer';
-import { toggleTierZeroNode } from 'src/ducks/explore/actions';
-import { useAppDispatch, useAppSelector } from 'src/store';
+import { useAppSelector } from 'src/store';
 
 const AssetGroupMenuItem: FC<{ assetGroupId: number; assetGroupName: string }> = ({ assetGroupId, assetGroupName }) => {
     const { addNotification } = useNotifications();
-    const dispatch = useAppDispatch();
+    const { refetch } = useExploreGraph();
 
     const [open, setOpen] = useState(false);
 
-    const selectedNode = useAppSelector((state) => state.entityinfo.selectedNode);
+    const { selectedItemQuery } = useExploreSelectedItem();
     const tierZeroAssetGroupId = useAppSelector(selectTierZeroAssetGroupId);
 
     const isMenuItemForTierZero = assetGroupId === tierZeroAssetGroupId;
@@ -44,10 +44,7 @@ const AssetGroupMenuItem: FC<{ assetGroupId: number; assetGroupName: string }> =
             ]);
         },
         onSuccess: () => {
-            if (selectedNode?.graphId && isMenuItemForTierZero) {
-                dispatch(toggleTierZeroNode(selectedNode.graphId));
-            }
-
+            refetch();
             addNotification('Update successful.', 'AssetGroupUpdateSuccess');
         },
         onError: (error: any) => {
@@ -60,21 +57,21 @@ const AssetGroupMenuItem: FC<{ assetGroupId: number; assetGroupName: string }> =
         apiClient
             .listAssetGroupMembers(assetGroupId, undefined, {
                 params: {
-                    object_id: `object_id=eq:${selectedNode?.id}`,
+                    object_id: `object_id=eq:${(selectedItemQuery.data as NodeResponse)?.objectId}`,
                 },
             })
             .then((res) => res.data.data?.members)
     );
 
     const handleAddToAssetGroup = () => {
-        if (selectedNode) {
-            mutation.mutate({ nodeId: selectedNode.id, action: 'add' });
+        if (selectedItemQuery.data && 'objectId' in selectedItemQuery.data) {
+            mutation.mutate({ nodeId: selectedItemQuery.data.objectId, action: 'add' });
         }
     };
 
     const handleRemoveFromAssetGroup = () => {
-        if (selectedNode) {
-            mutation.mutate({ nodeId: selectedNode.id, action: 'remove' });
+        if (selectedItemQuery.data && 'objectId' in selectedItemQuery.data) {
+            mutation.mutate({ nodeId: selectedItemQuery.data.objectId, action: 'remove' });
         }
     };
 
@@ -100,7 +97,7 @@ const AssetGroupMenuItem: FC<{ assetGroupId: number; assetGroupName: string }> =
                     Add to {assetGroupName}
                 </MenuItem>
                 {isMenuItemForTierZero ? (
-                    <ConfirmationDialog
+                    <ConfirmNodeChangesDialog
                         handleCancel={handleCloseConfirmation}
                         handleApply={handleAddToAssetGroup}
                         open={open}
@@ -119,7 +116,7 @@ const AssetGroupMenuItem: FC<{ assetGroupId: number; assetGroupName: string }> =
                     Remove from {assetGroupName}
                 </MenuItem>
                 {isMenuItemForTierZero ? (
-                    <ConfirmationDialog
+                    <ConfirmNodeChangesDialog
                         handleCancel={() => setOpen(false)}
                         handleApply={handleRemoveFromAssetGroup}
                         open={open}
@@ -131,7 +128,7 @@ const AssetGroupMenuItem: FC<{ assetGroupId: number; assetGroupName: string }> =
     }
 };
 
-const ConfirmationDialog: FC<{
+const ConfirmNodeChangesDialog: FC<{
     open: boolean;
     handleCancel: () => void;
     handleApply: () => void;
@@ -142,10 +139,12 @@ const ConfirmationDialog: FC<{
             <DialogTitle>Confirm Selection</DialogTitle>
             <DialogContent>{dialogContent}</DialogContent>
             <DialogActions>
-                <Button autoFocus onClick={handleCancel}>
+                <Button variant='tertiary' onClick={handleCancel}>
                     Cancel
                 </Button>
-                <Button onClick={handleApply}>Ok</Button>
+                <Button variant='primary' onClick={handleApply}>
+                    Ok
+                </Button>
             </DialogActions>
         </Dialog>
     );

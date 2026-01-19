@@ -19,16 +19,17 @@ package bootstrap
 import (
 	"context"
 	"fmt"
+	"log/slog"
 	"os"
 
-	"github.com/specterops/bloodhound/dawgs"
-	"github.com/specterops/bloodhound/dawgs/drivers/neo4j"
-	"github.com/specterops/bloodhound/dawgs/drivers/pg"
-	"github.com/specterops/bloodhound/dawgs/graph"
-	"github.com/specterops/bloodhound/dawgs/util/size"
-	"github.com/specterops/bloodhound/log"
-	"github.com/specterops/bloodhound/src/api/tools"
-	"github.com/specterops/bloodhound/src/config"
+	"github.com/jackc/pgx/v5/pgxpool"
+	"github.com/specterops/bloodhound/cmd/api/src/api/tools"
+	"github.com/specterops/bloodhound/cmd/api/src/config"
+	"github.com/specterops/dawgs"
+	"github.com/specterops/dawgs/drivers/neo4j"
+	"github.com/specterops/dawgs/drivers/pg"
+	"github.com/specterops/dawgs/graph"
+	"github.com/specterops/dawgs/util/size"
 )
 
 func ensureDirectory(path string) error {
@@ -56,6 +57,10 @@ func EnsureServerDirectories(cfg config.Configuration) error {
 		return err
 	}
 
+	if err := ensureDirectory(cfg.RetainedFilesDirectory()); err != nil {
+		return err
+	}
+
 	if err := ensureDirectory(cfg.ClientLogDirectory()); err != nil {
 		return err
 	}
@@ -73,51 +78,44 @@ func DefaultConfigFilePath() string {
 }
 
 func ConnectGraph(ctx context.Context, cfg config.Configuration) (*graph.DatabaseSwitch, error) {
-	var connectionString string
+	var (
+		connectionString string
+		pool             *pgxpool.Pool
+		err              error
+	)
 
-	if driverName, err := tools.LookupGraphDriver(ctx, cfg); err != nil {
+	driverName, err := tools.LookupGraphDriver(ctx, cfg)
+	if err != nil {
+		return nil, err
+	}
+
+	switch driverName {
+	case neo4j.DriverName:
+		slog.InfoContext(ctx, "Connecting to graph using Neo4j")
+		connectionString = cfg.Neo4J.Neo4jConnectionString()
+
+	case pg.DriverName:
+		slog.InfoContext(ctx, "Connecting to graph using PostgreSQL")
+		connectionString = cfg.Database.PostgreSQLConnectionString()
+
+		pool, err = pg.NewPool(connectionString)
+		if err != nil {
+			return nil, err
+		}
+
+	default:
+		return nil, fmt.Errorf("unknown graphdb driver name: %s", driverName)
+	}
+
+	if connectionString == "" {
+		return nil, fmt.Errorf("graph connection requires a connection url to be set")
+	} else if graphDatabase, err := dawgs.Open(ctx, driverName, dawgs.Config{
+		GraphQueryMemoryLimit: size.Size(cfg.GraphQueryMemoryLimit) * size.Gibibyte,
+		ConnectionString:      connectionString,
+		Pool:                  pool,
+	}); err != nil {
 		return nil, err
 	} else {
-		switch driverName {
-		case neo4j.DriverName:
-			log.Infof("Connecting to graph using Neo4j")
-			connectionString = cfg.Neo4J.Neo4jConnectionString()
-
-		case pg.DriverName:
-			log.Infof("Connecting to graph using PostgreSQL")
-			connectionString = cfg.Database.PostgreSQLConnectionString()
-
-		default:
-			return nil, fmt.Errorf("unknown graphdb driver name: %s", driverName)
-		}
-
-		if connectionString == "" {
-			return nil, fmt.Errorf("graph connection requires a connection url to be set")
-		} else if graphDatabase, err := dawgs.Open(ctx, driverName, dawgs.Config{
-			TraversalMemoryLimit: size.Size(cfg.TraversalMemoryLimit) * size.Gibibyte,
-			DriverCfg:            connectionString,
-		}); err != nil {
-			return nil, err
-		} else {
-			return graph.NewDatabaseSwitch(ctx, graphDatabase), nil
-		}
+		return graph.NewDatabaseSwitch(ctx, graphDatabase), nil
 	}
-}
-
-// InitializeLogging sets up output file logging, and returns errors if any
-func InitializeLogging(cfg config.Configuration) error {
-	var logLevel = log.LevelInfo
-
-	if cfg.LogLevel != "" {
-		if parsedLevel, err := log.ParseLevel(cfg.LogLevel); err != nil {
-			return err
-		} else {
-			logLevel = parsedLevel
-		}
-	}
-
-	log.Configure(log.DefaultConfiguration().WithLevel(logLevel))
-
-	log.Infof("Logging configured")
-	return nil
 }

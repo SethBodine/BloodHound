@@ -14,10 +14,8 @@
 //
 // SPDX-License-Identifier: Apache-2.0
 
-export { default as DataSelector } from './DataSelector';
+export * from './DomainInfo';
 
 export { default as LoadContainer } from './LoadContainer';
-
-export * from './DomainInfo';
 
 export * from './TenantInfo';

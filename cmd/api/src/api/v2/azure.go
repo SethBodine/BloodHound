@@ -1,37 +1,37 @@
 // Copyright 2023 Specter Ops, Inc.
-// 
+//
 // Licensed under the Apache License, Version 2.0
 // you may not use this file except in compliance with the License.
 // You may obtain a copy of the License at
-// 
+//
 //     http://www.apache.org/licenses/LICENSE-2.0
-// 
+//
 // Unless required by applicable law or agreed to in writing, software
 // distributed under the License is distributed on an "AS IS" BASIS,
 // WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
 // See the License for the specific language governing permissions and
 // limitations under the License.
-// 
+//
 // SPDX-License-Identifier: Apache-2.0
 
 package v2
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"net/http"
 	"sort"
 
-	azure2 "github.com/specterops/bloodhound/src/analysis/azure"
-	"github.com/specterops/bloodhound/src/api"
-	"github.com/specterops/bloodhound/src/api/bloodhoundgraph"
-	"github.com/specterops/bloodhound/src/model"
-	"github.com/specterops/bloodhound/src/utils"
 	"github.com/gorilla/mux"
-	"github.com/specterops/bloodhound/analysis/azure"
-	"github.com/specterops/bloodhound/dawgs/graph"
-	"github.com/specterops/bloodhound/dawgs/ops"
-	"github.com/specterops/bloodhound/errors"
+	azure2 "github.com/specterops/bloodhound/cmd/api/src/analysis/azure"
+	"github.com/specterops/bloodhound/cmd/api/src/api"
+	"github.com/specterops/bloodhound/cmd/api/src/api/bloodhoundgraph"
+	"github.com/specterops/bloodhound/cmd/api/src/model"
+	"github.com/specterops/bloodhound/cmd/api/src/utils"
+	"github.com/specterops/bloodhound/packages/go/analysis/azure"
+	"github.com/specterops/dawgs/graph"
+	"github.com/specterops/dawgs/ops"
 )
 
 const (
@@ -41,11 +41,6 @@ const (
 	objectIDQueryParameterName                = "object_id"
 	relatedEntityTypeQueryParameterName       = "related_entity_type"
 	relatedEntityReturnTypeQueryParameterName = "type"
-
-	errBadRelatedEntityReturnType = errors.Error("invalid return type requested for related entities")
-	errParameterRequired          = errors.Error("missing required parameter")
-	errParameterSkip              = errors.Error("invalid skip parameter")
-	errParameterRelatedEntityType = errors.Error("invalid related entity type")
 
 	entityTypeBase                = "az-base"
 	entityTypeUsers               = "users"
@@ -67,6 +62,13 @@ const (
 	entityTypeServicePrincipals   = "service-principals"
 	entityTypeRoles               = "roles"
 	entityTypeFunctionApps        = "function-apps"
+)
+
+var (
+	errBadRelatedEntityReturnType = errors.New("invalid return type requested for related entities")
+	errParameterRequired          = errors.New("missing required parameter")
+	ErrParameterSkip              = errors.New("invalid skip parameter")
+	ErrParameterRelatedEntityType = errors.New("invalid related entity type")
 )
 
 func graphRelatedEntityType(ctx context.Context, db graph.Database, entityType, objectID string, request *http.Request) (any, int, *api.ErrorWrapper) {
@@ -101,7 +103,12 @@ func graphRelatedEntityType(ctx context.Context, db graph.Database, entityType, 
 		} else {
 			return bloodhoundgraph.PathSetToBloodHoundGraph(assignments), assignments.Len(), nil
 		}
-
+	case azure.RelatedEntityTypeRoleApprovers:
+		if approvers, err := azure.ListRoleApproverPaths(ctx, db, objectID); err != nil {
+			return nil, 0, api.BuildErrorResponse(http.StatusInternalServerError, fmt.Sprintf("error fetching related entity type %s: %v", entityType, err), request)
+		} else {
+			return bloodhoundgraph.PathSetToBloodHoundGraph(approvers), approvers.Len(), nil
+		}
 	case azure.RelatedEntityTypeVaultKeyReaders, azure.RelatedEntityTypeVaultSecretReaders, azure.RelatedEntityTypeVaultCertReaders, azure.RelatedEntityTypeVaultAllReaders:
 		if groupMembers, err := azure.ListKeyVaultReaderPaths(ctx, db, relatedEntityType, objectID); err != nil {
 			return nil, 0, api.BuildErrorResponse(http.StatusInternalServerError, fmt.Sprintf("error fetching related entity type %s: %v", entityType, err), request)
@@ -217,6 +224,10 @@ func listRelatedEntityType(ctx context.Context, db graph.Database, entityType, o
 		if nodeSet, err = azure.ListEntityPIMAssignments(ctx, db, objectID, 0, 0); err != nil {
 			return nil, 0, err
 		}
+	case azure.RelatedEntityTypeRoleApprovers:
+		if nodeSet, err = azure.ListRoleApprovers(ctx, db, objectID, 0, 0); err != nil {
+			return nil, 0, err
+		}
 	case azure.RelatedEntityTypeVaultKeyReaders, azure.RelatedEntityTypeVaultSecretReaders, azure.RelatedEntityTypeVaultCertReaders, azure.RelatedEntityTypeVaultAllReaders:
 		if nodeSet, err = azure.ListKeyVaultReaders(ctx, db, relatedEntityType, objectID, 0, 0); err != nil {
 			return nil, 0, err
@@ -267,13 +278,13 @@ func listRelatedEntityType(ctx context.Context, db graph.Database, entityType, o
 		}
 
 	default:
-		return nil, 0, errParameterRelatedEntityType
+		return nil, 0, ErrParameterRelatedEntityType
 	}
 
 	nodeCount := nodeSet.Len()
 
 	if skip > nodeCount {
-		return nil, 0, errParameterSkip
+		return nil, 0, ErrParameterSkip
 	}
 
 	if skip+limit > nodeCount {
@@ -312,11 +323,11 @@ func (s *Resources) GetAZRelatedEntities(ctx context.Context, response http.Resp
 		}
 	} else {
 		if nodes, count, err := listRelatedEntityType(ctx, s.Graph, relatedEntityType, objectID, skip, limit); err != nil {
-			if errors.Is(err, errParameterSkip) {
+			if errors.Is(err, ErrParameterSkip) {
 				api.WriteErrorResponse(ctx, api.BuildErrorResponse(http.StatusBadRequest, fmt.Sprintf(utils.ErrorInvalidSkip, skip), request), response)
-			} else if errors.Is(err, errParameterRelatedEntityType) {
+			} else if errors.Is(err, ErrParameterRelatedEntityType) {
 				api.WriteErrorResponse(ctx, api.BuildErrorResponse(http.StatusNotFound, fmt.Sprintf("no matching related entity list type for %s", relatedEntityType), request), response)
-			} else if errors.Is(err, ops.ErrTraversalMemoryLimit) {
+			} else if errors.Is(err, ops.ErrGraphQueryMemoryLimit) {
 				api.WriteErrorResponse(ctx, api.BuildErrorResponse(http.StatusInternalServerError, "calculating the request results exceeded memory limitations due to the volume of objects involved", request), response)
 			} else {
 				api.WriteErrorResponse(ctx, api.BuildErrorResponse(http.StatusInternalServerError, "an unknown error occurred during the request", request), response)
@@ -404,9 +415,9 @@ func (s *Resources) GetAZEntity(response http.ResponseWriter, request *http.Requ
 		api.WriteErrorResponse(request.Context(), api.BuildErrorResponse(http.StatusBadRequest, fmt.Sprintf("query parameter %s is required", objectIDQueryParameterName), request), response)
 	} else if relatedEntityTypeStr := queryVars.Get(relatedEntityTypeQueryParameterName); relatedEntityTypeStr != "" {
 		s.GetAZRelatedEntities(request.Context(), response, request, objectID)
-	} else if hydrateCounts, err := api.ParseOptionalBool(queryVars.Get(api.QueryParameterHydrateCounts), true); err != nil {
+	} else if includeCounts, err := api.ParseOptionalBool(queryVars.Get(api.QueryParameterIncludeCounts), true); err != nil {
 		api.WriteErrorResponse(request.Context(), api.BuildErrorResponse(http.StatusBadRequest, api.ErrorResponseDetailsBadQueryParameterFilters, request), response)
-	} else if entityInformation, err := GetAZEntityInformation(request.Context(), s.Graph, entityType, objectID, hydrateCounts); err != nil {
+	} else if entityInformation, err := GetAZEntityInformation(request.Context(), s.Graph, entityType, objectID, includeCounts); err != nil {
 		if graph.IsErrNotFound(err) {
 			api.WriteErrorResponse(request.Context(), api.BuildErrorResponse(http.StatusNotFound, "not found", request), response)
 		} else {
